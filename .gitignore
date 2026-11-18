@@ -1,10 +1,25 @@
+# Environment files: real values never go to Git (only .env.example is tracked)
 .env
-.env.local
+.env.*
+!.env.example
+*.env.local
+
+# Credentials and keys
+*.pem
+*.key
+*.crt
+secrets/
+credentials*.json
+
+# Python
 __pycache__/
 *.pyc
 venv/
 .venv/
 db.sqlite3
+*.sqlite3
+
+# Node / build output
 node_modules/
 dist/
 build/

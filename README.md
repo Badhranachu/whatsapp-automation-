@@ -15,7 +15,8 @@ whatsapp-messenger/
 │   ├── messaging/       App: serializers, services (Meta client), views, tests
 │   ├── manage.py
 │   ├── requirements.txt
-│   ├── .env             local secrets (git-ignored)
+│   ├── .env.dev         local development secrets (git-ignored)
+│   ├── .env.prod        production server secrets (git-ignored, never committed)
 │   └── .env.example
 ├── frontend/
 │   ├── src/components/  MessageForm, StatusPanel
@@ -41,15 +42,15 @@ pip install -r requirements.txt
 python manage.py migrate
 ```
 
-### Configure `backend/.env`
-Open `backend/.env` and replace the placeholder:
+### Configure `backend/.env.dev`
+Development reads `backend/.env.dev` (copy `.env.example` if it is missing). Open it and replace the placeholder:
 
 ```env
 WHATSAPP_ACCESS_TOKEN=PASTE_NEW_META_ACCESS_TOKEN_HERE   # <-- paste your NEW token here
 WHATSAPP_PHONE_NUMBER_ID=PASTE_YOUR_PHONE_NUMBER_ID_HERE
 WHATSAPP_GRAPH_API_VERSION=v26.0
 ```
-Restart Django after editing. Never commit `.env`. The token never goes to the frontend.
+Restart Django after editing. Never commit `.env.dev` or `.env.prod`. The token never goes to the frontend.
 Revoke any token that was ever exposed publicly.
 
 ### Frontend
@@ -120,8 +121,17 @@ curl -X POST http://127.0.0.1:8000/api/send-message/ -H "Content-Type: applicati
 | 131026 "Message undeliverable" | Number is not on WhatsApp or hasn't accepted terms. |
 | 100 "Unsupported post request" | Wrong Phone Number ID or API version. |
 | 10 / 200 permission errors | Token lacks `whatsapp_business_messaging` permission. |
-| "WhatsApp credentials are not configured" | `.env` token still a placeholder, or Django not restarted. |
-| Browser CORS error | `FRONTEND_ORIGIN` in `.env` must match the frontend URL exactly. |
+| "WhatsApp credentials are not configured" | `.env.dev` token still a placeholder, or Django not restarted. |
+| Browser CORS error | `FRONTEND_ORIGIN` in `.env.dev` must match the frontend URL exactly. |
 
 ## Security (before any public deployment)
 This is a local development tool. The API has **no authentication** — anyone who can reach it can send messages from your number. Before deploying add: authentication, HTTPS, rate limiting, `DEBUG=False`, a strong `SECRET_KEY`, restricted `ALLOWED_HOSTS`/CORS, and a long-lived System User token stored in a secrets manager. Never commit or share access tokens.
+
+## Production (Docker, Ubuntu server)
+Production uses `docker-compose.yml` and **only** `backend/.env.prod`; `.env.dev` is never loaded by the containers.
+Fill in every `REPLACE_WITH_...` value in `.env.prod` (the backend refuses to start until you do), then:
+```bash
+chmod 600 backend/.env.prod
+docker compose config --quiet      # validate; do not run plain `docker compose config` (it prints secrets)
+docker compose up -d --build
+```

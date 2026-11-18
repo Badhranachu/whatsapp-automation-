@@ -1,0 +1,64 @@
+# Production deployment (Ubuntu server). Development does NOT use this file: run
+# `python manage.py runserver` and `npm run dev` with backend/.env.dev instead.
+#
+#   docker compose config --quiet     # validate (prints nothing; do NOT run plain `config`, it prints secrets)
+#   docker compose up -d --build      # deploy
+#
+# Only backend/.env.prod is loaded. backend/.env.dev is never read by these containers.
+
+name: whatsapp-automation-bot
+
+services:
+  backend:
+    build: ./backend
+    image: whatsapp-automation-bot-backend:latest
+    restart: unless-stopped
+    env_file: ./backend/.env.prod
+    volumes:
+      - backend_data:/data # SQLite database (DATABASE_PATH=/data/db.sqlite3)
+    ports:
+      # host 8003 -> container 8000. Bound to localhost: the server's Nginx terminates HTTPS.
+      # Change to "8003:8000" only if you want direct access from outside.
+      - "127.0.0.1:8003:8000"
+    networks: [app_net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the build. "/api" is proxied by the frontend's nginx to http://backend:8000
+        # (service name, not localhost), so the browser talks to one origin and no CORS is needed.
+        VITE_API_BASE_URL: /api
+    image: whatsapp-automation-bot-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      # host 8000 -> container 3000 (see backend note above about 127.0.0.1)
+      - "127.0.0.1:8000:3000"
+    networks: [app_net]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  backend_data:
+
+networks:
+  app_net:
+    driver: bridge

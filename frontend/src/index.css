@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+body {
+  @apply bg-slate-100 text-slate-800 antialiased;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ---------- Flow diagram (org-chart style tree) ---------- */
+.flow-tree ul {
+  display: flex;
+  justify-content: center;
+  padding-top: 24px;
+  position: relative;
+  margin: 0;
+}
+.flow-tree li {
+  list-style: none;
+  position: relative;
+  padding: 24px 10px 0;
+  text-align: center;
+}
+/* horizontal connectors between siblings */
+.flow-tree li::before,
+.flow-tree li::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 50%;
+  width: 50%;
+  height: 24px;
+  border-top: 2px solid #94a3b8;
+}
+.flow-tree li::after {
+  right: auto;
+  left: 50%;
+  border-left: 2px solid #94a3b8;
+}
+.flow-tree li:only-child::before,
+.flow-tree li:only-child::after {
+  display: none;
+}
+.flow-tree li:only-child {
+  padding-top: 0;
+}
+.flow-tree li:first-child::before,
+.flow-tree li:last-child::after {
+  border: 0 none;
+}
+.flow-tree li:last-child::before {
+  border-right: 2px solid #94a3b8;
+  border-radius: 0 8px 0 0;
+}
+.flow-tree li:first-child::after {
+  border-radius: 8px 0 0 0;
+}
+/* vertical connector from a parent down to its children row */
+.flow-tree ul ul::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 0;
+  height: 24px;
+  border-left: 2px solid #94a3b8;
+}

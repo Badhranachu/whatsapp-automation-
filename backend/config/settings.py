@@ -17,7 +17,10 @@ from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / '.env')
+# Development only: variables come from backend/.env.dev. Production containers get theirs
+# from docker compose (backend/.env.prod) and never contain .env.dev (see .dockerignore),
+# so nothing is loaded here in production. load_dotenv never overrides real environment variables.
+load_dotenv(BASE_DIR / '.env.dev')
 
 
 # Quick-start development settings - unsuitable for production
@@ -42,6 +45,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework.authtoken',
     'corsheaders',
     'messaging',
 ]
@@ -83,7 +87,8 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        # DATABASE_PATH lets production keep the SQLite file on a persistent volume.
+        'NAME': os.environ.get('DATABASE_PATH') or BASE_DIR / 'db.sqlite3',
     }
 }
 
@@ -133,12 +138,58 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [os.environ.get('FRONTEND_ORIGIN', 'http://localhost:5173')]
 CORS_ALLOW_ALL_ORIGINS = False
 
+# Origins (scheme + host) allowed to submit forms to Django, e.g. the admin login behind HTTPS.
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()
+]
+
+# Set HTTPS_ENABLED=True when the site is served over HTTPS (behind a TLS-terminating proxy).
+HTTPS_ENABLED = os.environ.get('HTTPS_ENABLED', 'False').lower() == 'true'
+if HTTPS_ENABLED:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': ['rest_framework.renderers.JSONRenderer'],
     'DEFAULT_PARSER_CLASSES': ['rest_framework.parsers.JSONParser'],
+    # Every API endpoint requires a login token unless a view opts out.
+    'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework.authentication.TokenAuthentication'],
+    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
+    'DEFAULT_THROTTLE_RATES': {'login': '10/min', 'admin_delete': '5/min'},
 }
 
 # Read from environment only; never expose these via API responses or logs.
 WHATSAPP_ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN', '')
 WHATSAPP_PHONE_NUMBER_ID = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '')
 WHATSAPP_GRAPH_API_VERSION = os.environ.get('WHATSAPP_GRAPH_API_VERSION', 'v26.0')
+# Must match the template's exact name and language code in WhatsApp Manager
+# (e.g. "en" and "en_US" are different languages to Meta).
+# Webhook: verify token must equal the one entered in the Meta dashboard.
+WHATSAPP_VERIFY_TOKEN = os.environ.get('WHATSAPP_VERIFY_TOKEN', '')
+# Optional but recommended: Meta App Secret, used to validate webhook signatures.
+WHATSAPP_APP_SECRET = os.environ.get('WHATSAPP_APP_SECRET', '')
+WHATSAPP_TEMPLATE_NAME =os.environ.get('WHATSAPP_TEMPLATE_NAME', 'test_notification')
+WHATSAPP_TEMPLATE_LANG = os.environ.get('WHATSAPP_TEMPLATE_LANG', 'en')
+
+
+# --- Production safety checks -------------------------------------------------
+# With DEBUG off the app refuses to start on dev defaults or unfilled placeholders,
+# instead of running with a known key or an unauthenticated webhook.
+if not DEBUG:
+    from django.core.exceptions import ImproperlyConfigured
+
+    def _unset(value):
+        return not value or value.startswith('REPLACE_WITH') or value == 'insecure-dev-key-change-me'
+
+    _problems = []
+    if _unset(SECRET_KEY):
+        _problems.append('SECRET_KEY')
+    if _unset(WHATSAPP_APP_SECRET):
+        _problems.append('WHATSAPP_APP_SECRET (needed to verify that webhooks really come from Meta)')
+    if any(h.startswith('REPLACE_WITH') for h in ALLOWED_HOSTS):
+        _problems.append('ALLOWED_HOSTS (still contains the domain placeholder)')
+    if any('REPLACE_WITH' in o for o in CSRF_TRUSTED_ORIGINS + CORS_ALLOWED_ORIGINS):
+        _problems.append('FRONTEND_ORIGIN / CSRF_TRUSTED_ORIGINS (still contain the domain placeholder)')
+    if _problems:
+        raise ImproperlyConfigured('Production settings incomplete: ' + '; '.join(_problems))
