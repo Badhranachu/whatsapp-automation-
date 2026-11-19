@@ -1,126 +1,302 @@
 #!/usr/bin/env bash
-# Safe production deploy for THIS project only. Run on the Ubuntu server from the project directory:
+# Production deployment for THIS project only (Compose project "whatsapp-automation-bot").
 #
-#   bash deploy.sh --check-only   # validations only: builds and starts nothing
-#   bash deploy.sh                # validate, build, start, verify
+# It deploys one exact, already validated commit. It never uses `docker compose down`, never touches
+# volumes, never uses a global Docker prune and never touches other applications on the server.
 #
-# It never prints secret values, and it never uses `docker compose down`, volume deletion or any
-# global prune. It only touches this Compose project ("whatsapp-automation-bot").
-set -euo pipefail
-cd "$(dirname "$0")"
+# Usage on the server
+#   bash deploy.sh --from-ssh      forced SSH command: reads the commit SHA the workflow sent
+#   bash deploy.sh <40-hex sha>    manual deployment of that commit (its message must contain [prod])
+#   bash deploy.sh --check-only    pre-flight checks only: builds and starts nothing
+#   bash deploy.sh --help
+#
+# Forced command for the workflow's SSH key (authorized_keys, ONE line; see README "CI/CD"):
+#   command="cd /var/www/whatsapp-automation-bot && bash deploy.sh --from-ssh",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... wa-actions-deploy
+# sshd puts whatever the client asked to run into SSH_ORIGINAL_COMMAND. This script accepts it only if it
+# is exactly one 40-character hexadecimal commit SHA; anything else is rejected before any action.
+#
+# Stages: lock -> exact SHA checkout -> pre-flight -> change detection -> preserve current images ->
+#         build changed services -> backup + migrate (only if there are pending migrations) ->
+#         backend deploy + verify -> frontend deploy + verify -> end-to-end check -> record SHA -> cleanup.
+# Any failure after a container was replaced triggers an automatic image rollback of that service.
+set -Eeuo pipefail
 
-ENV_FILE=backend/.env.prod
-CHECK_ONLY=false
-[ "${1:-}" = "--check-only" ] && CHECK_ONLY=true
-
-fail() { echo "STOP: $*" >&2; exit 1; }
-ok()   { echo "  ok  - $*"; }
-get()  { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }
-
-echo "== 1. Files"
-for f in docker-compose.yml backend/Dockerfile frontend/Dockerfile frontend/nginx.conf \
-         backend/.dockerignore frontend/.dockerignore "$ENV_FILE"; do
-  [ -f "$f" ] || fail "missing file: $f"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_DIR"
+for lib in common detect migrations docker preflight backup; do
+  # shellcheck source=/dev/null
+  . "$REPO_DIR/scripts/lib/$lib.sh"
 done
-ok "Dockerfiles, docker-compose.yml, nginx.conf, .dockerignore files and $ENV_FILE exist"
+# Deployments always build and run `latest`; never inherit a tag override from the caller.
+unset BACKEND_IMAGE_TAG FRONTEND_IMAGE_TAG
 
-echo "== 2. Production environment ($ENV_FILE) - only variable NAMES are shown"
-placeholders=$(grep -E '^[A-Z_]+=.*REPLACE_WITH_' "$ENV_FILE" | cut -d= -f1 || true)
-if [ -n "$placeholders" ]; then
-  echo "  placeholders still present in:"; echo "$placeholders" | sed 's/^/    - /'
-  fail "fill in every REPLACE_WITH_ value, then run this again"
-fi
-ok "no REPLACE_WITH_ placeholders"
-for v in DEBUG SECRET_KEY ALLOWED_HOSTS FRONTEND_ORIGIN CSRF_TRUSTED_ORIGINS HTTPS_ENABLED DATABASE_PATH \
-         WHATSAPP_ACCESS_TOKEN WHATSAPP_PHONE_NUMBER_ID WHATSAPP_GRAPH_API_VERSION \
-         WHATSAPP_TEMPLATE_NAME WHATSAPP_TEMPLATE_LANG WHATSAPP_VERIFY_TOKEN WHATSAPP_APP_SECRET; do
-  [ -n "$(get "$v")" ] || fail "$v is missing or empty in $ENV_FILE"
-done
-ok "all 14 required variables are set"
-[ "$(get DEBUG)" = "False" ] || fail "DEBUG must be False"
-ok "DEBUG=False"
-key=$(get SECRET_KEY)
-{ [ "${#key}" -ge 50 ] && [ "$key" != "insecure-dev-key-change-me" ]; } || fail "SECRET_KEY looks like a development value (too short or the dev default)"
-ok "SECRET_KEY is a long production value"
-[ "$(get HTTPS_ENABLED)" = "True" ] || fail "HTTPS_ENABLED must be True in production"
-ok "HTTPS_ENABLED=True"
+GIT_DIR_ABS="$(git rev-parse --absolute-git-dir)"
+STATE_DIR="$GIT_DIR_ABS/deploy-state" # inside .git: never shows up as an untracked file
 
-echo "== 3. Compose, Nginx and ignore rules"
-[ "$(get DATABASE_PATH)" = "/data/db.sqlite3" ] || fail "DATABASE_PATH must be /data/db.sqlite3"
-grep -q 'backend_data:/data' docker-compose.yml || fail "the backend_data volume is not mounted at /data"
-ok "SQLite lives at /data/db.sqlite3 on the persistent volume backend_data"
-grep -q 'VITE_API_BASE_URL: /api' docker-compose.yml || fail "frontend API base URL must be /api"
-ok "frontend API base URL is /api"
-grep -q '127.0.0.1:8000:3000' docker-compose.yml || fail "frontend must be mapped 127.0.0.1:8000:3000"
-grep -q '127.0.0.1:8003:8000' docker-compose.yml || fail "backend must be mapped 127.0.0.1:8003:8000"
-ok "ports: frontend 127.0.0.1:8000->3000, backend 127.0.0.1:8003->8000"
-grep -Eq 'location ~ \^/\(api\|admin\|webhook\)' frontend/nginx.conf && grep -q 'proxy_pass http://backend:8000' frontend/nginx.conf \
-  || fail "nginx must proxy /api, /admin and /webhook to http://backend:8000"
-ok "nginx proxies /api, /admin and /webhook to http://backend:8000"
-if git rev-parse --git-dir >/dev/null 2>&1; then
-  git check-ignore -q "$ENV_FILE" || fail "$ENV_FILE is not git-ignored"
-  [ -z "$(git ls-files | grep -E '(^|/)\.env($|\.(dev|prod)$)' || true)" ] || fail "an environment file is tracked by Git"
-  ok "$ENV_FILE is git-ignored and no env file is tracked"
-fi
-for d in backend frontend; do
-  grep -Eq '^\.env\.\*' "$d/.dockerignore" || fail "$d/.dockerignore does not exclude .env.* files"
-done
-ok ".dockerignore excludes every .env.* file, so no secrets enter the build context"
+# ---- state of the current run (used by the rollback handler) ----------------------------------------
+SHA=""
+MSG=""
+BUILT_SERVICES=""     # images that were built (the :latest tag may have moved)
+DEPLOYED_SERVICES=""  # services whose container was replaced
+MIGRATED=no           # set to yes just before migrations run
+ROLLBACK_ARMED=no
+DEPLOY_OK=no
 
-echo "== 4. Ports 8000 and 8003 on this server"
-command -v ss >/dev/null || fail "'ss' not found: cannot verify that the ports are free"
-own=$(docker compose ps -q 2>/dev/null | wc -l | tr -d ' ')
-busy=$(ss -ltnH '( sport = :8000 or sport = :8003 )' || true)
-if [ -n "$busy" ] && [ "$own" = "0" ]; then
-  echo "$busy" | sed 's/^/    /'
-  fail "port 8000 and/or 8003 is already in use by something else. Nothing was changed. Tell the owner, do not pick another port without approval."
-fi
-if [ -n "$busy" ]; then ok "ports held by this project's own running containers (redeploy)"; else ok "ports 8000 and 8003 are free"; fi
+usage() {
+  cat <<'EOF'
+Usage:
+  bash deploy.sh --from-ssh        forced SSH command (reads the SHA from SSH_ORIGINAL_COMMAND)
+  bash deploy.sh <40-hex-sha>      deploy that commit (its message must contain [prod])
+  bash deploy.sh --check-only      run the pre-flight checks only
+EOF
+}
 
-chmod 600 "$ENV_FILE"; ok "chmod 600 $ENV_FILE"
-docker compose config --quiet; ok "docker compose config is valid"
+read_last_deployed() {
+  local f="$STATE_DIR/last_deployed_sha" v=""
+  if [ -f "$f" ]; then v=$(tr -d '[:space:]' <"$f"); fi
+  if is_sha "$v"; then printf '%s' "$v"; fi
+  return 0
+}
 
-if $CHECK_ONLY; then echo; echo "All checks passed (--check-only: nothing was built or started)."; exit 0; fi
+record_success() { # sha services migrated
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$1" >"$STATE_DIR/last_deployed_sha.tmp"
+  mv "$STATE_DIR/last_deployed_sha.tmp" "$STATE_DIR/last_deployed_sha"
+  printf '%s %s SUCCESS services=[%s] migrated=%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" >>"$STATE_DIR/history.log"
+}
 
-echo "== 5. Build and start (this project only)"
-docker compose build
-docker compose up -d
+# ---- stage 1: lock, validate, check out the exact commit, hand over ------------------------------------
+mode_ssh() {
+  local cmd="${SSH_ORIGINAL_COMMAND-}"
+  is_sha "$cmd" || die "SSH command rejected: expected exactly one 40-character hexadecimal commit SHA. Nothing was changed."
+  mode_bootstrap "$cmd"
+}
 
-echo "== 6. Wait for healthy containers (up to 3 minutes)"
-for svc in backend frontend; do
-  cid=$(docker compose ps -q "$svc")
-  for _ in $(seq 1 36); do
-    st=$(docker inspect --format '{{.State.Health.Status}}' "$cid" 2>/dev/null || echo none)
-    [ "$st" = "healthy" ] && break
-    sleep 5
+mode_bootstrap() {
+  local sha="$1" msg
+  require_sha "$sha"
+  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 || die "docker compose is not available"
+  acquire_lock "$GIT_DIR_ABS/deploy.lock"
+
+  step "1. Check out the validated commit $sha"
+  [ -z "$(git status --porcelain)" ] || die "the working tree has uncommitted or untracked changes; refusing to overwrite unknown changes. Nothing was changed."
+  ok "working tree is clean"
+  git fetch --quiet origin main || die "git fetch failed. Nothing was changed."
+  git cat-file -e "${sha}^{commit}" 2>/dev/null || die "commit $sha is not available from origin"
+  git merge-base --is-ancestor "$sha" origin/main || die "commit $sha is not part of origin/main"
+  msg=$(git log -1 --format=%B "$sha")
+  gate_prod "$msg" || die "the commit message does not contain [prod]; refusing to deploy"
+  ok "commit is on main and carries [prod]"
+  git checkout --quiet --detach "$sha" || die "git checkout failed. Nothing was deployed."
+  [ "$(git rev-parse HEAD)" = "$sha" ] || die "the checked-out commit does not match the requested SHA"
+  ok "checked out exactly $sha"
+
+  # Hand over to the freshly checked-out copy of this script, so every deployment runs the deployment
+  # logic of the commit being deployed. exec keeps the lock (file descriptor 9).
+  exec bash "$REPO_DIR/deploy.sh" --run "$sha"
+}
+
+mode_check() {
+  preflight
+  echo
+  echo "All checks passed (--check-only: nothing was built or started)."
+}
+
+# ---- stage 2: the deployment itself --------------------------------------------------------------------
+mode_run() {
+  local sha="${1-}"
+  require_sha "$sha"
+  [ "$(git rev-parse HEAD)" = "$sha" ] || die "HEAD is not $sha: --run must follow a checkout of the validated commit"
+  if ! { : >&9; } 2>/dev/null; then acquire_lock "$GIT_DIR_ABS/deploy.lock"; fi # started by hand without the bootstrap
+  mkdir -p "$STATE_DIR"
+  SHA="$sha"
+  MSG=$(git log -1 --format=%B "$sha")
+  gate_prod "$MSG" || die "the commit message does not contain [prod]"
+
+  preflight
+
+  step "3. What changed since the last successful deployment"
+  local prev paths plan BUILD_BACKEND BUILD_FRONTEND
+  prev=$(read_last_deployed)
+  if [ -z "$prev" ]; then
+    info "no previously deployed commit is recorded: first deployment under this system, rebuilding both services"
+    plan=$(detect_plan_all)
+  elif ! git cat-file -e "${prev}^{commit}" 2>/dev/null; then
+    warn "the previously deployed commit ${prev:0:12} is not in this repository; rebuilding both services to be safe"
+    plan=$(detect_plan_all)
+  else
+    paths=$(git diff --name-only --no-renames "$prev" "$sha")
+    plan=$(printf '%s\n' "$paths" | detect_plan)
+    info "previous deployed commit: ${prev:0:12}"
+  fi
+  BUILD_BACKEND=$(plan_get build_backend "$plan")
+  BUILD_FRONTEND=$(plan_get build_frontend "$plan")
+  info "change categories: $(plan_get categories "$plan")"
+  info "decision: $(plan_get summary "$plan") | backend rebuild: $BUILD_BACKEND | frontend rebuild: $BUILD_FRONTEND"
+
+  if [ "$BUILD_BACKEND" = no ] && [ "$BUILD_FRONTEND" = no ]; then
+    step "No container rebuild or restart is needed"
+    record_success "$sha" "none" "no"
+    ok "recorded $sha as the deployed commit (no image was built, no container was touched)"
+    echo; echo "DEPLOY RESULT: SUCCESS commit=$sha services=none"
+    return 0
+  fi
+
+  local services=""
+  [ "$BUILD_BACKEND" = yes ] && services="backend"
+  [ "$BUILD_FRONTEND" = yes ] && services="$services frontend"
+  services="${services# }"
+
+  ROLLBACK_ARMED=yes
+  trap 'on_exit $?' EXIT
+  trap 'exit 143' HUP TERM INT PIPE # an interrupted deployment ends in the rollback handler, not half-way
+
+  step "4. Preserve the running images and build only the changed services: $services"
+  local svc
+  for svc in $services; do
+    BUILT_SERVICES="$BUILT_SERVICES $svc"
+    preserve_previous "$svc" || die "could not preserve the current $svc image; nothing was deployed"
+    build_service "$svc" "$sha" || die "the $svc image failed to build; $svc was not deployed"
+    ok "$svc built and tagged $(repo_of "$svc"):$sha"
   done
-  [ "$st" = "healthy" ] || { docker compose logs --tail=60 "$svc" | sed -E 's/(verify_token|hub\.challenge)=[^& "]*/\1=***/g'; fail "$svc is not healthy (status: $st)"; }
-  ok "$svc is healthy"
-done
 
-echo "== 7. HTTP verification"
-code() { curl -s -o /dev/null -w '%{http_code}' "$1"; }
-[ "$(code http://127.0.0.1:8000/)" = "200" ] && ok "frontend answers 200 on 127.0.0.1:8000" || fail "frontend did not answer 200"
-c=$(code http://127.0.0.1:8003/api/auth/me/); [ "$c" = "401" ] && ok "backend 127.0.0.1:8003 answers 401 (running; login required, as designed)" || fail "backend /api/auth/me/ returned $c, expected 401"
-c=$(code http://127.0.0.1:8000/api/auth/me/); [ "$c" = "401" ] && ok "frontend Nginx -> backend works (/api answers 401 through port 8000)" || fail "/api through the frontend returned $c, expected 401"
-c=$(code http://127.0.0.1:8000/webhook); [ "$c" = "403" ] && ok "/webhook reaches Django through Nginx (403 = verification refused, as designed)" || fail "/webhook returned $c, expected 403"
+  if in_list backend "$services"; then stage_migrations; fi
 
-echo "== 8. Database persistence and migrations"
-docker compose exec -T backend sh -c 'test -s /data/db.sqlite3' && ok "database file exists in the volume (/data/db.sqlite3)" || fail "no database file in /data"
-pending=$(docker compose exec -T backend python manage.py showmigrations --plan | grep -c '^\[ \]' || true)
-[ "$pending" = "0" ] && ok "migrations: all applied" || fail "$pending migrations still pending"
-docker compose restart backend >/dev/null
-cid=$(docker compose ps -q backend)
-for _ in $(seq 1 24); do [ "$(docker inspect --format '{{.State.Health.Status}}' "$cid")" = "healthy" ] && break; sleep 5; done
-docker compose exec -T backend sh -c 'test -s /data/db.sqlite3' && ok "database survived a backend restart" || fail "database missing after restart"
+  for svc in $services; do stage_deploy "$svc"; done
 
-echo "== 9. Status and recent logs (verify tokens hidden)"
-docker compose ps
-for svc in frontend backend; do
-  echo "--- $svc (last 100 lines)"
-  docker compose logs --tail=100 "$svc" | sed -E 's/(verify_token|hub\.challenge)=[^& "]*/\1=***/g'
-done
+  step "Final end-to-end verification"
+  verify_integration || die "the final integration check failed"
 
-echo
-echo "Deployed. Create the production administrator yourself (it asks for a password):"
-echo "  docker compose exec backend python manage.py createsuperuser"
+  record_success "$sha" "$services" "$MIGRATED"
+  DEPLOY_OK=yes
+  step "Cleanup of old images of this project"
+  cleanup_images "$sha"
+  echo
+  echo "DEPLOY RESULT: SUCCESS commit=$sha services=[$services] migrated=$MIGRATED"
+}
+
+stage_migrations() {
+  step "5. Database migrations"
+  local plan files_text risky approved=no
+  local -a files=()
+
+  # migration files must be committed: the models must not need a migration that is not in Git
+  dc run --rm --no-deps -T backend python manage.py makemigrations --check --dry-run >/dev/null \
+    || die "the models have changes without a committed migration file (makemigrations --check failed). Commit the migration and push again. Nothing was changed."
+  ok "no uncommitted model changes"
+
+  plan=$(dc run --rm --no-deps -T backend python manage.py migrate --plan 2>&1) || die "could not compute the migration plan. Nothing was changed."
+  if printf '%s\n' "$plan" | grep -q 'No planned migration operations'; then
+    ok "no pending migrations: no backup and no migration needed"
+    return 0
+  fi
+  info "pending migrations (plan):"
+  printf '%s\n' "$plan" | sed 's/^/        /'
+
+  files_text=$(printf '%s\n' "$plan" | plan_migration_files "$REPO_DIR")
+  if [ -n "$files_text" ]; then
+    mapfile -t files <<<"$files_text"
+    if risky=$(scan_destructive "${files[@]}"); then
+      if gate_migrate_ok "$MSG"; then
+        approved=yes
+        warn "potentially destructive or data-changing migration operations, APPROVED by [migrate-ok]:"
+        printf '%s\n' "$risky" | sed 's/^/        /' >&2
+      else
+        printf '%s\n' "$risky" | sed 's/^/        /' >&2
+        die "potentially destructive or data-changing migration operations were found (listed above) and the commit message does not contain [migrate-ok]. NOTHING was changed: no backup, no migration, no container touched. Review the migration, then push again with [prod] [migrate-ok] in the commit message."
+      fi
+    fi
+  fi
+  [ "$approved" = yes ] || ok "no destructive operations in the pending migrations"
+
+  info "backing up the database before migrating"
+  backup_database "$SHA" || die "the database backup failed, so the migrations were NOT applied. Nothing else was changed."
+  ok "backup written to the volume and to $HOST_BACKUP_DIR and verified"
+
+  MIGRATED=yes # from here on the database may differ from what the previous image expects
+  dc run --rm --no-deps -T backend python manage.py migrate --noinput \
+    || die "the migration failed. The backup is kept in $HOST_BACKUP_DIR; the running application was not touched. Do NOT restore automatically: inspect the error first."
+  plan=$(dc run --rm --no-deps -T backend python manage.py migrate --plan 2>&1) || die "could not re-check the migration plan"
+  printf '%s\n' "$plan" | grep -q 'No planned migration operations' || die "migrations are still pending after migrate"
+  ok "migrations applied exactly once and verified"
+}
+
+stage_deploy() { # service
+  local svc="$1" since
+  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  step "Deploy $svc"
+  DEPLOYED_SERVICES="$DEPLOYED_SERVICES $svc"
+  dc up -d --no-deps "$svc" || die "could not start the new $svc container"
+  wait_healthy "$svc" 150 || die "$svc did not become healthy"
+  ok "$svc container reports healthy"
+  case "$svc" in
+    backend) verify_backend "$since" || die "backend verification failed" ;;
+    frontend) verify_frontend || die "frontend verification failed" ;;
+  esac
+}
+
+# ---- failure handling ------------------------------------------------------------------------------------
+on_exit() {
+  local rc="$1" svc failed=no
+  trap - EXIT
+  trap '' PIPE HUP
+  set +e
+  if [ "$DEPLOY_OK" = yes ] && [ "$rc" -eq 0 ]; then exit 0; fi
+  [ "$rc" -ne 0 ] || rc=1
+  if [ "$ROLLBACK_ARMED" != yes ]; then exit "$rc"; fi
+
+  step "ROLLBACK: the deployment did not complete"
+  # shellcheck disable=SC2086 # intentional word splitting of the service lists
+  capture_failure_logs "$STATE_DIR/failures" "${SHA:-unknown}" $BUILT_SERVICES
+
+  for svc in frontend backend; do # newest-dependent first
+    if in_list "$svc" "$DEPLOYED_SERVICES"; then
+      if rollback_service "$svc"; then
+        ok "$svc: previous image restored and healthy"
+      else
+        warn "$svc: the previous image could not be restored to a healthy state"
+        failed=yes
+      fi
+    elif in_list "$svc" "$BUILT_SERVICES"; then
+      restore_latest_tag "$svc"
+      info "$svc: was built but never started; its latest tag was moved back, the running container was not touched"
+    fi
+  done
+
+  if [ "$MIGRATED" = yes ]; then
+    warn "database migrations were applied before this failure. They were NOT reversed."
+    warn "Backups: $HOST_BACKUP_DIR (and /data/backups in the volume). If the restored backend cannot run against the migrated database, restore a backup manually (see scripts/lib/backup.sh)."
+  fi
+  mkdir -p "$STATE_DIR"
+  printf '%s %s FAILED rolled_back=[%s] rollback_failed=%s migrated=%s\n' "$(date -u +%FT%TZ)" "${SHA:-unknown}" "$DEPLOYED_SERVICES" "$failed" "$MIGRATED" >>"$STATE_DIR/history.log"
+  echo
+  if [ "$failed" = yes ]; then
+    echo "DEPLOY RESULT: FAILED and the automatic rollback was NOT fully successful: manual attention required (commit=${SHA:-unknown})"
+  else
+    echo "DEPLOY RESULT: FAILED, previous version restored (commit=${SHA:-unknown})"
+  fi
+  exit "$rc"
+}
+
+main() {
+  case "${1-}" in
+    --from-ssh) mode_ssh ;;
+    --check-only) mode_check ;;
+    --run) shift; mode_run "${1-}" ;;
+    -h|--help) usage ;;
+    "")
+      # Transition: the old forced command ("git pull && bash deploy.sh") passes no argument; the
+      # workflow's SHA then arrives in SSH_ORIGINAL_COMMAND, so it is handled exactly like --from-ssh.
+      if [ -n "${SSH_ORIGINAL_COMMAND-}" ]; then mode_ssh; else usage >&2; return 2; fi
+      ;;
+    -*) usage >&2; return 2 ;;
+    *) mode_bootstrap "$1" ;;
+  esac
+}
+
+# The guard allows the test script to source this file. The whole compound command is read before
+# it runs, so replacing this file during a deployment (git checkout) cannot confuse the running shell.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+  exit $?
+fi

@@ -1,13 +1,14 @@
-# Auto-deploy to the production server.
+# Production CI/CD.
 #
-# Runs on every push to main, but only DEPLOYS when the latest commit message contains the
-# word [prod]. Without it the push is just stored on GitHub and nothing happens on the server.
+# Every push to main runs this workflow, but it only DEPLOYS when the HEAD commit message contains
+# the word [prod]. The exact commit SHA is validated first and then deployed by the server-side
+# script (deploy.sh); the server never just "pulls whatever main is".
 #
-#   git commit -m "Fix history filter [prod]"
+#   git commit -m "Improve webhook processing [prod]"
 #   git push origin main
 #
-# One-time setup (repository secrets, server key, read access) is described in README.md
-# under "Auto deploy".
+# A destructive database migration additionally needs [migrate-ok] in the message (see README, "CI/CD").
+# Secrets used (all existing): DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS, DEPLOY_PORT (optional).
 
 name: Deploy to production
 
@@ -18,17 +19,239 @@ on:
 permissions:
   contents: read
 
-# Never run two deployments at once; a second one waits for the first to finish.
-concurrency:
-  group: production-deploy
-  cancel-in-progress: false
-
 jobs:
-  deploy:
-    # The commit message is only read here, never placed into a shell command.
-    if: contains(github.event.head_commit.message, '[prod]')
+  # --------------------------------------------------------------------------------------------
+  detect-gate:
+    name: Gate (main + [prod])
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.gate.outputs.deploy }}
+      sha: ${{ steps.gate.outputs.sha }}
+    steps:
+      - id: gate
+        env:
+          # Passed through the environment, never interpolated into the script text.
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          deploy=false
+          if [[ "$REF" == "refs/heads/main" && "$SHA" =~ ^[0-9a-f]{40}$ && "$COMMIT_MESSAGE" == *"[prod]"* ]]; then
+            deploy=true
+          fi
+          migrate_ok=false
+          if [[ "$COMMIT_MESSAGE" == *"[migrate-ok]"* ]]; then migrate_ok=true; fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Production gate"
+            echo "- commit: \`$SHA\`"
+            echo "- branch main: $([[ "$REF" == "refs/heads/main" ]] && echo yes || echo no)"
+            echo "- \`[prod]\` in the commit message: $([[ "$COMMIT_MESSAGE" == *"[prod]"* ]] && echo yes || echo no)"
+            echo "- \`[migrate-ok]\` in the commit message: $migrate_ok"
+            echo "- **deploy: $deploy**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------------------------------------
+  backend-validate:
+    name: Backend validation
+    needs: detect-gate
+    if: needs.detect-gate.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect-gate.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12' # matches the production image (python:3.12-slim)
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/constraints.txt
+
+      - name: Install the pinned dependencies and check them
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt
+          pip check
+
+      - name: Django system checks, migration detection and tests (development-style settings)
+        working-directory: backend
+        env:
+          DEBUG: 'True'
+          SECRET_KEY: ci-test-only-not-a-real-key
+          DATABASE_PATH: ${{ runner.temp }}/ci-tests.sqlite3
+        run: |
+          python manage.py check
+          # Models must not need a migration that is missing from Git. Nothing is generated or written.
+          python manage.py makemigrations --check --dry-run
+          python manage.py test
+
+      - name: Django production configuration (temporary dummy values, not the real production environment)
+        working-directory: backend
+        env:
+          DEBUG: 'False'
+          ALLOWED_HOSTS: example.com,localhost,127.0.0.1
+          FRONTEND_ORIGIN: https://example.com
+          CSRF_TRUSTED_ORIGINS: https://example.com
+          HTTPS_ENABLED: 'True'
+          DATABASE_PATH: ${{ runner.temp }}/ci-deploy-check.sqlite3
+          WHATSAPP_ACCESS_TOKEN: ci-dummy-token
+          WHATSAPP_PHONE_NUMBER_ID: '0'
+          WHATSAPP_GRAPH_API_VERSION: v26.0
+          WHATSAPP_TEMPLATE_NAME: ci_dummy
+          WHATSAPP_TEMPLATE_LANG: en
+          WHATSAPP_VERIFY_TOKEN: ci-dummy-verify-token
+          WHATSAPP_APP_SECRET: ci-dummy-app-secret
+        run: |
+          set -euo pipefail
+          SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+          export SECRET_KEY
+          python manage.py check
+          set +e
+          out="$(python manage.py check --deploy 2>&1)"; rc=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then echo "check --deploy reported errors"; exit 1; fi
+          # HSTS (W004) and the HTTPS redirect (W008) are intentionally left to the host Nginx, which
+          # terminates HTTPS. Any OTHER warning fails the build. (grep exits 1 when nothing is found.)
+          unexpected="$(printf '%s\n' "$out" | grep -oE 'security\.W[0-9]+' | sort -u | grep -vE '^security\.W(004|008)$' || true)"
+          if [ -n "$unexpected" ]; then echo "Unexpected deployment warnings: $unexpected"; exit 1; fi
+          echo "check --deploy: only the two intentional warnings (W004, W008)"
+
+  # --------------------------------------------------------------------------------------------
+  frontend-validate:
+    name: Frontend validation
+    needs: detect-gate
+    if: needs.detect-gate.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect-gate.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22' # matches the production image (node:22-alpine)
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Reproducible install from the lockfile
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Production build
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: /api
+        run: npm run build
+
+      - name: The lockfile was not changed by the install or the build
+        run: git diff --exit-code -- frontend/package.json frontend/package-lock.json
+
+  # --------------------------------------------------------------------------------------------
+  docker-validate:
+    name: Docker, Compose and deployment scripts
+    needs: detect-gate
+    if: needs.detect-gate.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.detect-gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: Deployment script tests (change detection, SHA/[prod]/[migrate-ok] gates, lock, rollback)
+        run: |
+          bash -n deploy.sh
+          for f in scripts/lib/*.sh scripts/test-deploy.sh; do bash -n "$f"; done
+          bash scripts/test-deploy.sh
+          python3 scripts/test_backup_sqlite.py
+
+      - name: Validate Compose with a temporary dummy environment file
+        run: |
+          # The real file only exists on the server and is never committed; this one is throw-away.
+          cat > backend/.env.prod <<'EOF'
+          DEBUG=False
+          SECRET_KEY=ci-dummy-secret-key-for-compose-validation-only-0123456789
+          ALLOWED_HOSTS=example.com,localhost,127.0.0.1
+          FRONTEND_ORIGIN=https://example.com
+          CSRF_TRUSTED_ORIGINS=https://example.com
+          HTTPS_ENABLED=True
+          DATABASE_PATH=/data/db.sqlite3
+          WHATSAPP_ACCESS_TOKEN=ci-dummy-token
+          WHATSAPP_PHONE_NUMBER_ID=0
+          WHATSAPP_GRAPH_API_VERSION=v26.0
+          WHATSAPP_TEMPLATE_NAME=ci_dummy
+          WHATSAPP_TEMPLATE_LANG=en
+          WHATSAPP_VERIFY_TOKEN=ci-dummy-verify-token
+          WHATSAPP_APP_SECRET=ci-dummy-app-secret
+          EOF
+          docker compose config --quiet
+          rendered="$(docker compose config)"
+          # build-time frontend configuration must stay "/api", and the default image tag must be latest
+          grep -q 'VITE_API_BASE_URL: /api' <<<"$rendered"
+          grep -q 'image: whatsapp-automation-bot-backend:latest' <<<"$rendered"
+          grep -q 'image: whatsapp-automation-bot-frontend:latest' <<<"$rendered"
+          grep -q '127.0.0.1' <<<"$rendered"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build the backend image (BuildKit, GitHub cache, not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./backend
+          push: false
+          load: true
+          tags: wa-ci-backend:validate
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build the frontend image (BuildKit, GitHub cache, not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./frontend
+          build-args: |
+            VITE_API_BASE_URL=/api
+          push: false
+          load: true
+          tags: wa-ci-frontend:validate
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Smoke-test the built images (no production connection)
+        run: |
+          set -euo pipefail
+          docker run --rm --env-file backend/.env.prod wa-ci-backend:validate python manage.py check
+          docker run --rm --env-file backend/.env.prod wa-ci-backend:validate gunicorn --check-config config.wsgi:application
+          docker run --rm --add-host backend:127.0.0.1 wa-ci-frontend:validate nginx -t
+
+  # --------------------------------------------------------------------------------------------
+  deploy:
+    name: Deploy the validated commit
+    needs: [detect-gate, backend-validate, frontend-validate, docker-validate]
+    if: needs.detect-gate.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Only one production deployment at a time. Waiting deployments are not cancelled by non-deploying
+    # runs (those never reach this job). The server-side lock is a second layer of protection.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     steps:
       - name: Prepare SSH (pinned host key, dedicated deploy key)
         env:
@@ -40,14 +263,55 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
 
-      - name: Update code and deploy on the server
+      - name: Deploy exactly the validated commit
         env:
+          SHA: ${{ needs.detect-gate.outputs.sha }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
         run: |
-          # Only this project's folder is touched. deploy.sh validates everything first and
-          # stops (changing nothing) on a placeholder, an occupied port or a failed check.
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-              -p "${DEPLOY_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" \
-              'cd /var/www/whatsapp-automation-bot && git pull --ff-only origin main && bash deploy.sh'
+          set -euo pipefail
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "refusing to deploy: invalid commit SHA"; exit 1; }
+          # The ONLY thing sent to the server is the 40-character commit SHA. The key's forced command on
+          # the server ("bash deploy.sh --from-ssh") rejects anything else. Output is the server's
+          # deployment log (secrets are masked there).
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
+              -p "${DEPLOY_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "$SHA"
+
+  # --------------------------------------------------------------------------------------------
+  report:
+    name: Report
+    needs: [detect-gate, backend-validate, frontend-validate, docker-validate, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Summary
+        env:
+          GATE: ${{ needs.detect-gate.outputs.deploy }}
+          SHA: ${{ needs.detect-gate.outputs.sha }}
+          BACKEND: ${{ needs.backend-validate.result }}
+          FRONTEND: ${{ needs.frontend-validate.result }}
+          DOCKER: ${{ needs.docker-validate.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+        run: |
+          {
+            echo "## Production deployment report"
+            echo "- commit: \`$SHA\`"
+            if [ "$GATE" != "true" ]; then
+              echo "- **Not deployed**: the push has no \`[prod]\` in the commit message (or is not on main). Nothing ran."
+            else
+              echo "| stage | result |"
+              echo "|---|---|"
+              echo "| backend validation | $BACKEND |"
+              echo "| frontend validation | $FRONTEND |"
+              echo "| docker / compose / scripts | $DOCKER |"
+              echo "| deploy (SSH + server script) | $DEPLOY |"
+              if [ "$DEPLOY" = "success" ]; then
+                echo "- **Deployed and verified by the server's health checks.**"
+              else
+                echo "- **Not deployed.** Open the failed job. If the server rolled back, its log shows 'previous version restored'."
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

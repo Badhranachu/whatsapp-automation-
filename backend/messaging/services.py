@@ -161,8 +161,9 @@ def _image_payload(to, media_id, caption=''):
     }
 
 
-def send_image_message(to, path=REPLY_IMAGE_PATH):
+def send_image_message(to, path=None):
     """Send a local image file (used for the button-reply image)."""
+    path = path or REPLY_IMAGE_PATH  # looked up at call time so tests can point it at a temporary file
     mime = mimetypes.guess_type(str(path))[0] or 'application/octet-stream'
     try:
         with open(path, 'rb') as fh:

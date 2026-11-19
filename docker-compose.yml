@@ -3,8 +3,16 @@
 #   prod - Docker (this file only), configured by backend/.env.prod
 # Ports are fixed on purpose (confirmed free on the server): frontend 8000, backend 8003.
 #
+# Production is deployed ONLY by deploy.sh (GitHub Actions -> SSH -> deploy.sh <commit sha>).
+# Do not run `docker compose up --build` by hand: that skips the backup/migration/rollback logic.
+#
 #   docker compose config --quiet     # validate (prints nothing; do NOT run plain `config`, it prints secrets)
-#   docker compose up -d --build      # deploy
+#
+# Image tags: deploy.sh builds `latest`, keeps the previous known-good image as `previous` and
+# tags every build with its commit SHA. To run a specific tag by hand (for example a manual
+# rollback), set the interpolation variable only for that one command:
+#   BACKEND_IMAGE_TAG=previous docker compose up -d --no-deps --no-build backend
+# BACKEND_IMAGE_TAG / FRONTEND_IMAGE_TAG are Compose defaults (latest), not settings you put in .env.
 #
 # Only backend/.env.prod is loaded. backend/.env.dev is never read by these containers.
 
@@ -12,18 +20,23 @@ name: whatsapp-automation-bot
 
 services:
   backend:
-    build: ./backend
-    image: whatsapp-automation-bot-backend:latest
+    build:
+      context: ./backend
+      labels:
+        # Ownership label: lets deploy.sh clean up only THIS project's old images.
+        com.nexston.project: whatsapp-automation-bot
+    image: whatsapp-automation-bot-backend:${BACKEND_IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file: ./backend/.env.prod
     volumes:
-      - backend_data:/data # SQLite database (DATABASE_PATH=/data/db.sqlite3)
+      - backend_data:/data # SQLite database (DATABASE_PATH=/data/db.sqlite3) and its backups
     ports:
       # host 8003 -> container 8000, localhost only: never exposed to the internet directly.
       - "127.0.0.1:8003:8000"
     networks: [app_net]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)"]
+      # Real application check: Django answers AND the database responds (200), else 503.
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health/', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -39,7 +52,9 @@ services:
         # Baked into the build. "/api" is proxied by the frontend's nginx to http://backend:8000
         # (service name, not localhost), so the browser talks to one origin and no CORS is needed.
         VITE_API_BASE_URL: /api
-    image: whatsapp-automation-bot-frontend:latest
+      labels:
+        com.nexston.project: whatsapp-automation-bot
+    image: whatsapp-automation-bot-frontend:${FRONTEND_IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       backend:

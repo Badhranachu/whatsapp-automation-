@@ -7,6 +7,8 @@ from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from rest_framework.test import APITestCase
 
+from .testutils import ReplyImageMixin
+
 CREDS = dict(
     WHATSAPP_ACCESS_TOKEN='test-token',
     WHATSAPP_PHONE_NUMBER_ID='123',
@@ -55,7 +57,7 @@ class SendOptionsTests(APITestCase):
 
 
 @override_settings(**CREDS)
-class WebhookTests(TestCase):
+class WebhookTests(ReplyImageMixin, TestCase):
     def test_verification_ok(self):
         r = self.client.get('/webhook', {
             'hub.mode': 'subscribe', 'hub.verify_token': 'verify-me', 'hub.challenge': '12345',
@@ -111,7 +113,7 @@ class WebhookTests(TestCase):
 
 
 @override_settings(**CREDS)
-class HistoryTests(APITestCase):
+class HistoryTests(ReplyImageMixin, APITestCase):
     def setUp(self):
         self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
 

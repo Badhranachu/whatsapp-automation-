@@ -5,6 +5,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from rest_framework.test import APITestCase
 
+from .testutils import ReplyImageMixin
 from .models import MessageLog, MessageTemplate, Option, Question
 
 CREDS = dict(
@@ -146,7 +147,7 @@ class TemplateSendTests(APITestCase):
 
 
 @override_settings(**CREDS)
-class FlowWebhookTests(TestCase):
+class FlowWebhookTests(ReplyImageMixin, TestCase):
     def setUp(self):
         self.tpl, self.root, self.yes, self.no, self.follow = build_flow()
 

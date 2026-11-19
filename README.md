@@ -136,46 +136,103 @@ docker compose config --quiet      # validate; do not run plain `docker compose 
 docker compose up -d --build
 ```
 
-## Auto deploy (GitHub Actions -> production server)
-Every push to `main` is stored on GitHub. It is **deployed to the server only when the latest commit
-message contains `[prod]`**:
+## CI/CD: GitHub Actions -> SSH -> server-side deploy script
+A push to `main` is deployed to production **only when the HEAD commit message contains `[prod]`**:
 ```bash
-git commit -m "Fix history filter [prod]"
+git add .
+git commit -m "Improve webhook processing [prod]"
 git push origin main
 ```
-The workflow (`.github/workflows/deploy.yml`) connects to the server over SSH, runs
-`git pull --ff-only origin main` in `/var/www/whatsapp-automation-bot` and then `bash deploy.sh`, which
-validates everything first and stops without changing anything if a check fails. A failed deploy shows
-as a red run in the repository's **Actions** tab. Two deploys never run at the same time.
+A push without `[prod]` is only stored on GitHub; nothing runs on the server. A destructive database migration
+additionally needs `[migrate-ok]` (see below).
 
-### One-time setup
-**1. The server must be able to pull the code** (read-only key for the private repo). On the server:
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/wa_github_read -N "" -C "wa-server-read"
-cat ~/.ssh/wa_github_read.pub        # add it at GitHub: repo > Settings > Deploy keys (leave "write" OFF)
-cd /var/www/whatsapp-automation-bot
-git config core.sshCommand "ssh -i ~/.ssh/wa_github_read -o IdentitiesOnly=yes"
-git remote set-url origin git@github.com:Badhranachu/whatsapp-automation-.git
-git fetch origin main                # must work without a password prompt
-```
-**2. Create a separate SSH key just for the workflow** (on your PC, not on the server):
-```bash
-ssh-keygen -t ed25519 -f wa_actions_deploy -N "" -C "wa-actions-deploy"
-```
-Add the **public** key to the deploy user's `~/.ssh/authorized_keys` on the server as ONE line that can
-only run the deployment (nothing else, no tunnels):
-```
-command="cd /var/www/whatsapp-automation-bot && git pull --ff-only origin main && bash deploy.sh",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA...your-public-key... wa-actions-deploy
-```
-**3. Add these repository secrets** (GitHub: repo > Settings > Secrets and variables > Actions):
+### What happens (`.github/workflows/deploy.yml`)
+1. **detect-gate**: branch is `main` and the message contains `[prod]`; the exact 40-character commit SHA is passed on.
+2. **backend-validate** (Python 3.12), **frontend-validate** (Node 22), **docker-validate**: run in parallel on that exact SHA.
+   They run `pip install -r requirements.txt -c constraints.txt` + `pip check`, the Django checks, `check --deploy`
+   (with temporary dummy values), `makemigrations --check --dry-run`, all backend tests, `npm ci`, lint and the
+   production build, the deployment-script tests, `docker compose config`, and a BuildKit build of both images
+   (GitHub cache, nothing is pushed). Any failure stops everything; production is not touched.
+3. **deploy**: one SSH call that sends **only the validated SHA**. Runs one at a time (`concurrency`), plus a server-side lock.
+4. **report**: a summary on the run page.
 
-| Secret | Value |
+### What the server does (`deploy.sh`, with `scripts/lib/*`)
+1. Takes an exclusive lock, checks that the SHA is 40 hex characters, the working tree is clean, the commit is on
+   `origin/main` and its message has `[prod]`, then checks out **exactly that SHA** (never `git pull`).
+2. Pre-flight: `.env.prod` has no placeholders, `DEBUG=False`, ports, Compose config.
+3. **Change detection** against the last successfully deployed SHA (stored in `.git/deploy-state/`):
+
+| Changed files | Action |
 |---|---|
-| `DEPLOY_HOST` | server address |
-| `DEPLOY_USER` | the SSH user that owns `/var/www/whatsapp-automation-bot` (must be in the `docker` group) |
-| `DEPLOY_PORT` | SSH port (leave unset for 22) |
-| `DEPLOY_SSH_KEY` | contents of the **private** file `wa_actions_deploy` |
-| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -p 22 <server address>` (pins the server's identity) |
+| backend source / `requirements.txt` / `constraints.txt` / backend Dockerfile | rebuild + deploy **backend** only |
+| `backend/messaging/migrations/*` | backend, plus backup + migrate |
+| frontend source / `package.json` / lockfile / frontend Dockerfile / `nginx.conf` | rebuild + deploy **frontend** only |
+| both | backend first (verified), then frontend |
+| `docker-compose.yml` or any unknown path | both (conservative); Docker's cache and Compose only recreate what really changed |
+| docs, tests, CI, `deploy.sh`, `scripts/*` | no rebuild, no restart; the SHA is recorded |
 
-**4. On the server:** `backend/.env.prod` must exist and be filled in (it is never in Git), and
-`bash deploy.sh --check-only` must pass. Delete the private key file from your PC after saving it as a secret.
+4. The running images are kept as `:previous`; only the changed services are built (`latest` + the commit SHA tag).
+5. If migrations are pending: committed-migration check, `migrate --plan`, a scan for risky operations, a verified
+   SQLite backup, then `migrate` **once** (migrations no longer run when the container starts).
+6. Backend deploy -> health + `/api/health/` + API checks; frontend deploy -> health + page checks; final end-to-end
+   check through ports 8000 and 8003. Only then the SHA is recorded as deployed.
+7. Cleanup: only this project's old image tags (keeps `latest`, `previous` and the deployed SHA), never a global prune.
+
+### Migration approval and backups
+- Operations `RemoveField`, `DeleteModel`, `RenameModel`, `RenameField`, `AlterField`, `AlterModelTable`, `RunPython`,
+  `RunSQL`, `SeparateDatabaseAndState`, `RemoveIndex`, `RemoveConstraint` stop the deployment **before anything is
+  changed** unless the commit message also contains `[migrate-ok]`: `git commit -m "Drop old column [prod] [migrate-ok]"`.
+- A backup is taken only when migrations are pending. It uses SQLite's online backup, is verified, and is written to
+  the volume (`/data/backups`) **and** to `/var/backups/whatsapp-automation-bot/` as `db-<UTC time>-<sha>.sqlite3`.
+  The 14 newest are kept in each place; the newest verified backup is never deleted.
+- Migrations are **never reversed automatically**, and the database is **never restored automatically**.
+
+### Rollback
+- A failure after a container was replaced restores that service's `:previous` image, recreates only that service and
+  waits for it to be healthy. If the frontend (or the final check) fails after the backend was updated, **both** are restored.
+- If migrations were already applied, the log says so and points to the backups. The old backend image may not run
+  against a migrated schema; additive migrations normally do. Restore a backup manually if needed (steps in `scripts/lib/backup.sh`).
+- Manual rollback of one service:
+  ```bash
+  docker tag whatsapp-automation-bot-backend:previous whatsapp-automation-bot-backend:latest
+  docker compose up -d --no-deps --no-build backend
+  ```
+  (a specific commit: `BACKEND_IMAGE_TAG=<sha> docker compose up -d --no-deps --no-build backend`)
+- Failure logs (secrets masked) are saved in `.git/deploy-state/failures/`; deployment history in `.git/deploy-state/history.log`.
+
+### GitHub secrets: no new ones
+`DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` and the optional `DEPLOY_PORT` are all that is needed.
+No new environment variable or `.env` field is required.
+
+### One-time cutover on the server (in this order)
+1. Merge this change **without** `[prod]` in the commit message, so nothing deploys yet.
+2. On the server (once): `cd /var/www/whatsapp-automation-bot && git pull --ff-only origin main`, then `bash deploy.sh --check-only`.
+   (`flock`, `curl`, `ss` and Docker Compose must be available.)
+3. Replace the workflow key's line in `~/.ssh/authorized_keys` so it accepts only a commit SHA (ONE line):
+   ```
+   command="cd /var/www/whatsapp-automation-bot && bash deploy.sh --from-ssh",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA...your-public-key... wa-actions-deploy
+   ```
+   sshd hands the requested command to the script in `SSH_ORIGINAL_COMMAND`; anything that is not exactly one 40-character
+   hexadecimal SHA is rejected. (The old forced command `git pull ... && bash deploy.sh` still works for one transition
+   deployment, but leaves the repository on a detached commit, so switch to the line above before the second deployment.)
+4. Push a commit with `[prod]`. The first deployment rebuilds both services (no SHA recorded yet) and keeps the running
+   images as `:previous`.
+
+### Manual use on the server
+`bash deploy.sh --check-only` (pre-flight only) | `bash deploy.sh <sha>` (deploy that commit; its message needs `[prod]`).
+
+### Troubleshooting
+| Message | Meaning |
+|---|---|
+| `SSH command rejected` | the forced command received something other than a 40-hex SHA |
+| `working tree has uncommitted or untracked changes` | someone edited files on the server; clean them (never overwritten automatically) |
+| `another deployment is already running` | the lock is held; wait for it to finish |
+| `... without [migrate-ok]` | a risky migration; review it, then push again with `[prod] [migrate-ok]` |
+| `DEPLOY RESULT: FAILED, previous version restored` | rolled back; read the log above it and `.git/deploy-state/failures/` |
+| `... NOT fully successful: manual attention required` | the rollback could not restore a healthy service; see the log and the backups |
+
+### Known limitations
+- Replacing a container takes a few seconds, during which the API (backend) or the site (frontend) is unavailable; Meta retries failed webhook deliveries.
+- The login and delete rate limits trust the `X-Forwarded-For` header (DRF `NUM_PROXIES` is not set). Setting it needs the real proxy count verified on the server first, so it is not changed here.
+- If the SSH connection drops mid-deployment, the server script is interrupted and rolls back what it replaced.
+- The dependency pins in `backend/constraints.txt` are the versions verified in the audit; change them deliberately.

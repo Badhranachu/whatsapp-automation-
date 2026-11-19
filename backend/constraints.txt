@@ -1,0 +1,16 @@
+# Exact versions verified in the dependency audit (and gunicorn as resolved by the production image).
+# Used only to make image builds reproducible:  pip install -r requirements.txt -c constraints.txt
+# requirements.txt keeps the allowed ranges. Nothing here is an upgrade: these are the versions
+# already in use. Change a pin only deliberately, after running the tests.
+Django==5.2.19
+djangorestframework==3.18.3
+django-cors-headers==4.9.0
+requests==2.34.2
+python-dotenv==1.2.4
+gunicorn==27.0.1
+asgiref==3.13.0
+sqlparse==0.6.1
+urllib3==2.8.0
+certifi==2026.10.23
+idna==3.20
+charset-normalizer==3.5.2
