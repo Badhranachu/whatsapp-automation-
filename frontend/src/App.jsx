@@ -8,6 +8,7 @@ import Templates from './components/Templates';
 import Questions from './components/Questions';
 import TemplateSend from './components/TemplateSend';
 import DiagramTemplates from './components/DiagramTemplates';
+import UserManagement from './components/UserManagement';
 import {
   getMe,
   getToken,
@@ -60,6 +61,7 @@ function useOnline() {
 
 export default function App() {
   const [email, setEmail] = useState(null);
+  const [isSuperuser, setIsSuperuser] = useState(false);
   const [checking, setChecking] = useState(Boolean(getToken()));
   const [tab, setTab] = useState('dashboard');
   const install = useInstallPrompt();
@@ -77,7 +79,10 @@ export default function App() {
   useEffect(() => {
     if (!getToken()) return;
     getMe()
-      .then((me) => setEmail(me.email))
+      .then((me) => {
+        setEmail(me.email);
+        setIsSuperuser(Boolean(me.is_superuser));
+      })
       .catch(() => setEmail(null))
       .finally(() => setChecking(false));
   }, []);
@@ -92,17 +97,27 @@ export default function App() {
     if (!(await confirmLeave())) return;
     await logout();
     setEmail(null);
+    setIsSuperuser(false);
     setTab('dashboard');
   };
 
   if (checking) {
     return <div className="flex justify-center py-16 text-sm text-slate-500">Loading...</div>;
   }
-  if (!email) return <Login onLoggedIn={setEmail} />;
+  if (!email) {
+    return (
+      <Login
+        onLoggedIn={(data) => {
+          setEmail(data.email);
+          setIsSuperuser(Boolean(data.is_superuser));
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex min-h-dvh flex-col md:flex-row">
-      <Sidebar active={tab} onSelect={go} email={email} onLogout={handleLogout} onInstall={install} />
+      <Sidebar active={tab} onSelect={go} email={email} isSuperuser={isSuperuser} onLogout={handleLogout} onInstall={install} />
       <main className="min-w-0 flex-1 p-3 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-6">
         {!online && (
           <div role="status" className="mb-3 rounded-lg bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900">
@@ -132,6 +147,7 @@ export default function App() {
         {tab === 'templatesend' && <TemplateSend />}
         {tab === 'diagrams' && <DiagramTemplates />}
         {tab === 'history' && <History />}
+        {tab === 'users' && isSuperuser && <UserManagement currentEmail={email} />}
       </main>
     </div>
   );

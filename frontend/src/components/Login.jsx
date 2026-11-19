@@ -18,7 +18,7 @@ export default function Login({ onLoggedIn }) {
     setLoading(true);
     try {
       const data = await login(email.trim(), password);
-      onLoggedIn(data.email);
+      onLoggedIn(data);
     } catch (err) {
       showError(err.message, 'Login failed');
     } finally {

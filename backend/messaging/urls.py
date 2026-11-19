@@ -8,6 +8,8 @@ from .flows import (
     QuestionDeleteView,
     TemplateSendView,
 )
+from .health import health
+from .users import UserDeleteView, UserListCreateView
 from .runs import FlowRunDetailView, FlowRunListView, TemplateStatsView
 from .views import (
     LoginView,
@@ -22,9 +24,12 @@ from .views import (
 )
 
 urlpatterns = [
+    path('health/', health, name='health'),
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/me/', MeView.as_view(), name='me'),
+    path('users/', UserListCreateView.as_view(), name='users'),
+    path('users/<int:user_id>/', UserDeleteView.as_view(), name='user-delete'),
     path('stats/', StatsView.as_view(), name='stats'),
     path('templates/', TemplateListCreateView.as_view(), name='templates'),
     path('templates/<int:pk>/', TemplateDetailView.as_view(), name='template-detail'),

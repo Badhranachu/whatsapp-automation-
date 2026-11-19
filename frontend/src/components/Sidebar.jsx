@@ -9,6 +9,7 @@ export const TABS = [
   { id: 'templatesend', label: 'Template Send', icon: '🚀' },
   { id: 'diagrams', label: 'Diagram Templates', icon: '🗺️' },
   { id: 'history', label: 'History', icon: '🕘' },
+  { id: 'users', label: 'User Management', icon: '👥', adminOnly: true },
 ];
 
 // true while the screen is phone-sized (below Tailwind's md breakpoint)
@@ -42,7 +43,7 @@ function NavButton({ active, onClick, icon, children }) {
   );
 }
 
-export default function Sidebar({ active, onSelect, email, onLogout, onInstall }) {
+export default function Sidebar({ active, onSelect, email, isSuperuser, onLogout, onInstall }) {
   const [open, setOpen] = useState(false); // phone menu drawer
   const isMobile = useIsMobile();
 
@@ -67,6 +68,7 @@ export default function Sidebar({ active, onSelect, email, onLogout, onInstall }
     setOpen(false);
     onSelect(id);
   };
+  const tabs = TABS.filter((t) => !t.adminOnly || isSuperuser);
   const currentLabel = TABS.find((t) => t.id === active)?.label ?? 'WhatsApp Messenger';
 
   return (
@@ -113,7 +115,7 @@ export default function Sidebar({ active, onSelect, email, onLogout, onInstall }
         </div>
 
         <nav className="flex flex-1 flex-col gap-1">
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <NavButton key={t.id} icon={t.icon} active={active === t.id} onClick={() => choose(t.id)}>
               {t.label}
             </NavButton>

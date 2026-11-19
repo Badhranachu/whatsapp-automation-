@@ -47,7 +47,10 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         token, _ = Token.objects.get_or_create(user=user)
-        return Response({'success': True, 'token': token.key, 'email': user.email})
+        return Response({
+            'success': True, 'token': token.key, 'email': user.email,
+            'is_superuser': user.is_superuser,
+        })
 
 
 class LogoutView(APIView):
@@ -58,7 +61,7 @@ class LogoutView(APIView):
 
 class MeView(APIView):
     def get(self, request):
-        return Response({'email': request.user.email})
+        return Response({'email': request.user.email, 'is_superuser': request.user.is_superuser})
 
 
 class StatsView(APIView):

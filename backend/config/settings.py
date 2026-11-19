@@ -156,7 +156,7 @@ REST_FRAMEWORK = {
     # Every API endpoint requires a login token unless a view opts out.
     'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework.authentication.TokenAuthentication'],
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
-    'DEFAULT_THROTTLE_RATES': {'login': '10/min', 'admin_delete': '5/min'},
+    'DEFAULT_THROTTLE_RATES': {'login': '10/min', 'admin_delete': '5/min', 'user_admin': '20/min'},
 }
 
 # Read from environment only; never expose these via API responses or logs.

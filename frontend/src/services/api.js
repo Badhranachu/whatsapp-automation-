@@ -141,5 +141,10 @@ export const addOption = (questionId, title) =>
   call(() => client.post(`/questions/${questionId}/options/`, { title }));
 export const deleteQuestion = (questionId) => call(() => client.delete(`/questions/${questionId}/`));
 export const deleteOption = (optionId) => call(() => client.delete(`/options/${optionId}/`));
+// User management (super admins only).
+export const getUsers = () => call(() => client.get('/users/'));
+export const createUser = (payload) => call(() => client.post('/users/', payload));
+export const deleteUser = (id, password) =>
+  call(() => client.delete(`/users/${id}/`, { data: { password } }));
 export const sendOptions = (phoneNumber) =>
   call(() => client.post('/send-options/', { phone_number: phoneNumber }));
