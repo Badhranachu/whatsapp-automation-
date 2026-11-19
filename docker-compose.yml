@@ -1,5 +1,7 @@
-# Production deployment (Ubuntu server). Development does NOT use this file: run
-# `python manage.py runserver` and `npm run dev` with backend/.env.dev instead.
+# This project has exactly two environments:
+#   dev  - no Docker: `python manage.py runserver` and `npm run dev`, configured by backend/.env.dev
+#   prod - Docker (this file only), configured by backend/.env.prod
+# Ports are fixed on purpose (confirmed free on the server): frontend 8000, backend 8003.
 #
 #   docker compose config --quiet     # validate (prints nothing; do NOT run plain `config`, it prints secrets)
 #   docker compose up -d --build      # deploy
@@ -17,8 +19,7 @@ services:
     volumes:
       - backend_data:/data # SQLite database (DATABASE_PATH=/data/db.sqlite3)
     ports:
-      # host 8003 -> container 8000. Bound to localhost: the server's Nginx terminates HTTPS.
-      # Change to "8003:8000" only if you want direct access from outside.
+      # host 8003 -> container 8000, localhost only: never exposed to the internet directly.
       - "127.0.0.1:8003:8000"
     networks: [app_net]
     healthcheck:
@@ -44,7 +45,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      # host 8000 -> container 3000 (see backend note above about 127.0.0.1)
+      # host 8000 -> container 3000, localhost only: the server's Nginx proxies HTTPS to this port.
       - "127.0.0.1:8000:3000"
     networks: [app_net]
     healthcheck:

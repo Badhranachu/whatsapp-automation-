@@ -1,0 +1,53 @@
+# Auto-deploy to the production server.
+#
+# Runs on every push to main, but only DEPLOYS when the latest commit message contains the
+# word [prod]. Without it the push is just stored on GitHub and nothing happens on the server.
+#
+#   git commit -m "Fix history filter [prod]"
+#   git push origin main
+#
+# One-time setup (repository secrets, server key, read access) is described in README.md
+# under "Auto deploy".
+
+name: Deploy to production
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Never run two deployments at once; a second one waits for the first to finish.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # The commit message is only read here, never placed into a shell command.
+    if: contains(github.event.head_commit.message, '[prod]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Prepare SSH (pinned host key, dedicated deploy key)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Update code and deploy on the server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          # Only this project's folder is touched. deploy.sh validates everything first and
+          # stops (changing nothing) on a placeholder, an occupied port or a failed check.
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -p "${DEPLOY_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" \
+              'cd /var/www/whatsapp-automation-bot && git pull --ff-only origin main && bash deploy.sh'

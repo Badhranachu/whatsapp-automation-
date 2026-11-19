@@ -135,3 +135,47 @@ chmod 600 backend/.env.prod
 docker compose config --quiet      # validate; do not run plain `docker compose config` (it prints secrets)
 docker compose up -d --build
 ```
+
+## Auto deploy (GitHub Actions -> production server)
+Every push to `main` is stored on GitHub. It is **deployed to the server only when the latest commit
+message contains `[prod]`**:
+```bash
+git commit -m "Fix history filter [prod]"
+git push origin main
+```
+The workflow (`.github/workflows/deploy.yml`) connects to the server over SSH, runs
+`git pull --ff-only origin main` in `/var/www/whatsapp-automation-bot` and then `bash deploy.sh`, which
+validates everything first and stops without changing anything if a check fails. A failed deploy shows
+as a red run in the repository's **Actions** tab. Two deploys never run at the same time.
+
+### One-time setup
+**1. The server must be able to pull the code** (read-only key for the private repo). On the server:
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/wa_github_read -N "" -C "wa-server-read"
+cat ~/.ssh/wa_github_read.pub        # add it at GitHub: repo > Settings > Deploy keys (leave "write" OFF)
+cd /var/www/whatsapp-automation-bot
+git config core.sshCommand "ssh -i ~/.ssh/wa_github_read -o IdentitiesOnly=yes"
+git remote set-url origin git@github.com:Badhranachu/whatsapp-automation-.git
+git fetch origin main                # must work without a password prompt
+```
+**2. Create a separate SSH key just for the workflow** (on your PC, not on the server):
+```bash
+ssh-keygen -t ed25519 -f wa_actions_deploy -N "" -C "wa-actions-deploy"
+```
+Add the **public** key to the deploy user's `~/.ssh/authorized_keys` on the server as ONE line that can
+only run the deployment (nothing else, no tunnels):
+```
+command="cd /var/www/whatsapp-automation-bot && git pull --ff-only origin main && bash deploy.sh",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA...your-public-key... wa-actions-deploy
+```
+**3. Add these repository secrets** (GitHub: repo > Settings > Secrets and variables > Actions):
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_HOST` | server address |
+| `DEPLOY_USER` | the SSH user that owns `/var/www/whatsapp-automation-bot` (must be in the `docker` group) |
+| `DEPLOY_PORT` | SSH port (leave unset for 22) |
+| `DEPLOY_SSH_KEY` | contents of the **private** file `wa_actions_deploy` |
+| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -p 22 <server address>` (pins the server's identity) |
+
+**4. On the server:** `backend/.env.prod` must exist and be filled in (it is never in Git), and
+`bash deploy.sh --check-only` must pass. Delete the private key file from your PC after saving it as a secret.
