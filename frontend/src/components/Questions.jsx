@@ -774,6 +774,16 @@ function FlowEditor({ templateId, onBack }) {
           </>
         ) : selected ? (
           <>
+            {path.length > 1 && (
+              // Back up one level: to the question whose option led here.
+              <Button
+                variant="ghost"
+                className="mb-2 !px-0 !py-1"
+                onClick={() => select(path[path.length - 2].question.id)}
+              >
+                ← Back to previous question
+              </Button>
+            )}
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-bold uppercase text-slate-400">

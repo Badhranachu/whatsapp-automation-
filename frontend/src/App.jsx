@@ -11,7 +11,7 @@ import DiagramTemplates from './components/DiagramTemplates';
 import UserManagement from './components/UserManagement';
 import AuditLog from './components/AuditLog';
 import Profile from './components/Profile';
-import ForgotPassword from './components/ForgotPassword';
+// DISABLED (forgot password is off for signed-out users): import ForgotPassword from './components/ForgotPassword';
 import {
   getMe,
   getToken,
@@ -37,7 +37,7 @@ const TAB_PATHS = {
   audit: '/audit-log',
 };
 const ADMIN_TABS = new Set(['users', 'audit']);
-const FORGOT_PATH = '/forgot-password';
+// DISABLED: const FORGOT_PATH = '/forgot-password';
 
 function tabFromPath(pathname) {
   const clean = pathname.replace(/\/+$/, '') || '/';
@@ -89,8 +89,8 @@ export default function App() {
   const [checking, setChecking] = useState(Boolean(getToken()));
   const [tab, setTab] = useState(() => tabFromPath(window.location.pathname));
   const tabRef = useRef(tab);
-  const [forgot, setForgot] = useState(() => window.location.pathname === FORGOT_PATH);
-  const [lastEmail, setLastEmail] = useState('');
+  // DISABLED: const [forgot, setForgot] = useState(() => window.location.pathname === FORGOT_PATH);
+  // DISABLED: const [lastEmail, setLastEmail] = useState('');
   tabRef.current = tab;
   const install = useInstallPrompt();
   const online = useOnline();
@@ -125,7 +125,7 @@ export default function App() {
   // Browser Back / Forward: change page, but ask first when a form has unsaved data.
   useEffect(() => {
     const onPop = async () => {
-      setForgot(window.location.pathname === FORGOT_PATH);
+      // DISABLED: setForgot(window.location.pathname === FORGOT_PATH);
       const next = tabFromPath(window.location.pathname);
       if (next === tabRef.current) return;
       if (await confirmLeave()) {
@@ -168,28 +168,10 @@ export default function App() {
     return <div className="flex justify-center py-16 text-sm text-slate-500">Loading...</div>;
   }
   if (!email) {
-    const showLogin = () => {
-      window.history.pushState(null, '', '/');
-      setForgot(false);
-    };
-    if (forgot) {
-      return (
-        <ForgotPassword
-          onBack={showLogin}
-          onDone={(address) => {
-            setLastEmail(address);
-            showLogin(); // password updated: back to the login form
-          }}
-        />
-      );
-    }
+    // DISABLED (forgot password): the "Forgot password?" page and link are off. To turn them back on,
+    // restore the ForgotPassword import above, the forgot/lastEmail state, and pass onForgot to <Login>.
     return (
       <Login
-        initialEmail={lastEmail}
-        onForgot={() => {
-          window.history.pushState(null, '', FORGOT_PATH);
-          setForgot(true);
-        }}
         onLoggedIn={(data) => {
           setEmail(data.email);
           setIsSuperuser(Boolean(data.is_superuser));

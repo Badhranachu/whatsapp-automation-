@@ -1,4 +1,5 @@
 import re
+import unittest
 from datetime import timedelta
 
 from django.contrib.auth.models import User
@@ -14,6 +15,7 @@ from .models import AuditLog, PasswordResetOtp
 NEW_PASSWORD = 'Brand-new-pass-77'
 
 
+@unittest.skip('Public forgot-password API is disabled in urls.py; remove this line when it is turned back on')
 @override_settings(OTP_EMAIL_ASYNC=False)
 class PasswordResetTests(APITestCase):
     def setUp(self):

@@ -18,7 +18,7 @@ from .profile import (
     ProfilePasswordVerifyView,
     ProfileView,
 )
-from .password_reset import ForgotPasswordView, ResetPasswordView, VerifyOtpView
+# DISABLED (public forgot-password API): from .password_reset import ForgotPasswordView, ResetPasswordView, VerifyOtpView
 from .users import UserDeleteView, UserListCreateView
 from .audit_views import AuditLogListView
 from .runs import FlowRunDetailView, FlowRunListView, TemplateExportView, TemplateStatsView
@@ -38,9 +38,11 @@ urlpatterns = [
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/me/', MeView.as_view(), name='me'),
-    path('auth/forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
-    path('auth/verify-otp/', VerifyOtpView.as_view(), name='verify-otp'),
-    path('auth/reset-password/', ResetPasswordView.as_view(), name='reset-password'),
+    # DISABLED: these three endpoints let anyone who is not signed in reset an admin password by email code.
+    # Turned off so nothing is reachable from outside. Re-enable them together with the import above.
+    # path('auth/forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
+    # path('auth/verify-otp/', VerifyOtpView.as_view(), name='verify-otp'),
+    # path('auth/reset-password/', ResetPasswordView.as_view(), name='reset-password'),
     path('users/', UserListCreateView.as_view(), name='users'),
     path('users/<int:user_id>/', UserDeleteView.as_view(), name='user-delete'),
     path('stats/', StatsView.as_view(), name='stats'),

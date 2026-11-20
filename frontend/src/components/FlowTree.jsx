@@ -116,49 +116,60 @@ function Branch({ q, ...rest }) {
   );
 }
 
-// A3 landscape minus 10 mm margins, in CSS pixels (96 dpi). The whole tree is scaled down to fit one page.
-const PDF_PAGE_W = 1511;
-const PDF_PAGE_H = 1047;
+const esc = (v) =>
+  String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
-// Prints the whole diagram (not just the visible part) so the browser can "Save as PDF".
-// It is vector output, so a big tree stays sharp when zoomed in the PDF.
-function printDiagram(sourceList, title) {
+// One question (and everything below it) as a vertical tree: a big org chart cannot be read on a page,
+// but this version flows over normal A4 pages, never gets clipped, and its text can be searched.
+function pdfBranch(q, opts) {
+  const end = q.options.length === 0;
+  const note = opts.questionNote?.(q);
+  let html = `<div class="q${end ? ' end' : ''}">
+    <div class="lvl">${end ? 'End note · ' : ''}Level ${q.depth}${end && q.wants_reply ? ' · typed reply' : ''}</div>
+    <div class="txt">${esc(q.text)}</div>${note ? `<div class="note">${esc(note)}</div>` : ''}</div>`;
+  if (!end) {
+    html += '<div class="kids">';
+    q.options.forEach((o) => {
+      const optNote = opts.optionNote?.(o);
+      html += `<div class="opt"><span class="pill">${esc(o.title)}${optNote ? ` · ${esc(optNote)}` : ''}</span>`;
+      html += o.next ? `<div class="sub">${pdfBranch(o.next, opts)}</div>` : '<div class="sub"><div class="q end"><div class="lvl">No follow-up</div></div></div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+  return html;
+}
+
+// Opens the browser's print dialog with the whole flow laid out for paper; choose "Save as PDF".
+function printDiagram(root, title, opts) {
   const frame = document.createElement('iframe');
   frame.setAttribute('aria-hidden', 'true');
   frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
-  const styles = [...document.querySelectorAll('link[rel="stylesheet"], style')]
-    .map((n) => (n.tagName === 'LINK' ? `<link rel="stylesheet" href="${n.href}">` : n.outerHTML))
-    .join('');
-  const clone = sourceList.cloneNode(true);
-  // The "you are here" badge only makes sense on screen.
-  clone.querySelectorAll('[data-current="true"] > span.absolute').forEach((n) => n.remove());
-  const safeTitle = String(title || 'Flow diagram').replace(/[<>&]/g, '');
-  frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title>${styles}
-<style>
-  @page { size: A3 landscape; margin: 10mm; }
-  html, body { margin: 0; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  h1 { font: 700 18px/1.3 system-ui, sans-serif; margin: 0 0 2px; }
-  p.sub { font: 12px/1.3 system-ui, sans-serif; color: #64748b; margin: 0 0 10px; }
-  #fit { overflow: visible; }
-  #inner { transform-origin: 0 0; display: inline-block; }
-</style></head><body>
-<h1>${safeTitle}</h1><p class="sub">Flow diagram · ${new Date().toLocaleDateString()}</p>
-<div id="fit"><div id="inner" class="flow-tree"></div></div></body></html>`;
+  const safeTitle = esc(title || 'Flow diagram');
+  frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title><style>
+  @page { size: A4 portrait; margin: 12mm; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #fff; color: #0f172a; font: 12px/1.35 system-ui, "Segoe UI", Arial, sans-serif;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .sub-title { color: #64748b; margin: 0 0 14px; }
+  .q { display: inline-block; max-width: 100%; border: 1px solid #94a3b8; border-radius: 8px; padding: 6px 10px; background: #fff;
+    break-inside: avoid; page-break-inside: avoid; }
+  .q.end { border-color: #f59e0b; background: #fffbeb; }
+  .lvl { font-size: 9px; font-weight: 700; text-transform: uppercase; color: #94a3b8; }
+  .q.end .lvl { color: #b45309; }
+  .txt { font-weight: 600; font-size: 13px; }
+  .note { font-size: 10px; font-weight: 600; color: #0f766e; margin-top: 2px; }
+  .kids { margin: 6px 0 4px 18px; border-left: 2px solid #cbd5e1; padding-left: 14px; }
+  .opt { margin: 6px 0; break-inside: avoid-page; }
+  .pill { display: inline-block; background: #0f766e; color: #fff; border-radius: 999px; padding: 2px 10px; font-weight: 600; font-size: 11px;
+    break-after: avoid; page-break-after: avoid; }
+  .sub { margin: 5px 0 0 18px; }
+</style></head><body><h1>${safeTitle}</h1><p class="sub-title">Flow diagram · ${esc(new Date().toLocaleDateString())}</p>
+${pdfBranch(root, opts)}</body></html>`;
   frame.onload = () => {
-    const doc = frame.contentDocument;
-    const inner = doc.getElementById('inner');
-    inner.appendChild(clone);
-    // measure at natural size, then scale to one page
-    const w = inner.scrollWidth;
-    const h = inner.scrollHeight;
-    const headerH = 48;
-    const scale = Math.min(1, PDF_PAGE_W / Math.max(w, 1), (PDF_PAGE_H - headerH) / Math.max(h, 1));
-    inner.style.transform = `scale(${scale})`;
-    const fit = doc.getElementById('fit');
-    fit.style.width = `${Math.ceil(w * scale)}px`;
-    fit.style.height = `${Math.ceil(h * scale)}px`;
     const previousTitle = document.title;
-    document.title = safeTitle; // the PDF file name suggestion comes from the title
+    document.title = String(title || 'Flow diagram'); // the PDF file name suggestion comes from the title
     const done = () => {
       document.title = previousTitle;
       frame.remove();
@@ -250,10 +261,7 @@ export default function FlowTree({ root, currentLabel = 'You are here', title = 
       <Button
         variant="secondary"
         className="!py-1.5"
-        onClick={() => {
-          const list = box.current?.querySelector('ul');
-          if (list) printDiagram(list, title);
-        }}
+        onClick={() => printDiagram(root, title, { questionNote: rest.questionNote, optionNote: rest.optionNote })}
       >
         ⬇ PDF
       </Button>

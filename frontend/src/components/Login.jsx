@@ -65,16 +65,19 @@ export default function Login({ onLoggedIn, onForgot, initialEmail = '' }) {
           className={inputClass}
         />
 
-        <div className="mt-2 text-right">
-          <button
-            type="button"
-            onClick={onForgot}
-            disabled={loading}
-            className="text-sm font-semibold text-emerald-700 hover:underline"
-          >
-            Forgot password?
-          </button>
-        </div>
+        {/* The link only shows when the page passes onForgot (currently turned off in App.jsx). */}
+        {onForgot && (
+          <div className="mt-2 text-right">
+            <button
+              type="button"
+              onClick={onForgot}
+              disabled={loading}
+              className="text-sm font-semibold text-emerald-700 hover:underline"
+            >
+              Forgot password?
+            </button>
+          </div>
+        )}
 
         <Button type="submit" className="mt-3 w-full" disabled={loading}>
           {loading ? (

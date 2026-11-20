@@ -2,9 +2,18 @@ import axios from 'axios';
 
 const TOKEN_KEY = 'wa_token';
 
+// The login token lives in sessionStorage: a reload keeps you signed in, but closing the tab or the
+// browser window ends the session and the next visit starts at the login page.
+// (Older versions kept it in localStorage; that copy is removed so nobody stays signed in forever.)
+try {
+  localStorage.removeItem(TOKEN_KEY);
+} catch {
+  /* storage unavailable */
+}
+
 export function getToken() {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return sessionStorage.getItem(TOKEN_KEY);
   } catch {
     return null;
   }
@@ -12,8 +21,8 @@ export function getToken() {
 
 export function setToken(token) {
   try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.removeItem(TOKEN_KEY);
   } catch {
     /* storage unavailable: user just has to log in again */
   }
