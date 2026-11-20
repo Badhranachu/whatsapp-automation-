@@ -26,13 +26,14 @@ function QuestionCard({ q, currentId, currentLabel, onSelect, path, note }) {
       )}
       <div className={`text-[10px] font-bold uppercase ${endNote ? 'text-amber-600' : 'text-slate-400'}`}>
         {endNote ? `End note · Level ${q.depth}` : `Level ${q.depth}`}
+        {endNote && q.wants_reply ? ' · ✍ typed reply' : ''}
       </div>
       <div className="line-clamp-3 break-words font-medium">{q.text}</div>
       {note && <div className="mt-1 text-[11px] font-semibold text-teal-700">{note}</div>}
     </>
   );
 
-  const classes = `relative mx-auto w-48 rounded-xl p-3 text-left text-sm shadow-sm transition sm:w-52 ${
+  const classes = `relative mx-auto w-40 rounded-lg p-2 text-left text-xs shadow-sm transition sm:w-44 ${
     isCurrent
       ? 'bg-emerald-50 ring-2 ring-emerald-500'
       : onPath
@@ -71,7 +72,7 @@ function Branch({ q, ...rest }) {
             return (
               <li key={o.id}>
                 <span
-                  className={`inline-block max-w-[11rem] truncate rounded-full px-3 py-1 text-xs font-semibold text-white ${
+                  className={`inline-block max-w-[9rem] truncate rounded-full px-2.5 py-0.5 text-[11px] font-semibold text-white ${
                     dim ? 'bg-slate-300' : taken ? 'bg-emerald-600 ring-2 ring-emerald-300' : 'bg-teal-700'
                   }`}
                 >
@@ -90,13 +91,13 @@ function Branch({ q, ...rest }) {
                           type="button"
                           onClick={() => onSelect(q.id)}
                           title="Select the parent question to add a follow-up"
-                          className="mx-auto block w-24 rounded-lg border-2 border-dashed border-slate-300 px-2 py-2 text-xs text-slate-400 hover:border-emerald-400 hover:text-emerald-600 sm:w-28"
+                          className="mx-auto block w-16 rounded-lg border-2 border-dashed border-slate-300 px-1 py-1 text-xs text-slate-400 hover:border-emerald-400 hover:text-emerald-600"
                         >
                           end
                         </button>
                       ) : (
                         <div
-                          className={`mx-auto w-24 rounded-lg border-2 border-dashed px-2 py-2 text-xs sm:w-28 ${
+                          className={`mx-auto w-16 rounded-lg border-2 border-dashed px-1 py-1 text-xs ${
                             dim ? 'border-slate-200 text-slate-300' : 'border-slate-300 text-slate-400'
                           }`}
                         >
@@ -118,6 +119,8 @@ function Branch({ q, ...rest }) {
 export default function FlowTree({ root, currentLabel = 'You are here', ...rest }) {
   const box = useRef(null);
   const [full, setFull] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const tuning = useRef(false);
   const currentId = rest.currentId;
 
   // The tree can be wider than the screen. Centre the view on the current question
@@ -125,6 +128,10 @@ export default function FlowTree({ root, currentLabel = 'You are here', ...rest 
   useEffect(() => {
     const el = box.current;
     if (!el) return;
+    if (tuning.current) {
+      tuning.current = false;
+      return;
+    }
     const target = el.querySelector('[data-current="true"]');
     let left = (el.scrollWidth - el.clientWidth) / 2;
     if (target) {
@@ -133,7 +140,19 @@ export default function FlowTree({ root, currentLabel = 'You are here', ...rest 
       left = el.scrollLeft + (t.left + t.width / 2) - (c.left + el.clientWidth / 2);
     }
     el.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
-  }, [root?.id, currentId, full]);
+  }, [root?.id, currentId, full, zoom]);
+
+  const clamp = (z) => Math.min(1.5, Math.max(0.15, Math.round(z * 100) / 100));
+  // Shrink until the whole tree fits the visible area (never enlarge past 100%).
+  const fit = () => {
+    const el = box.current;
+    if (!el) return;
+    const natural = el.scrollWidth / zoom;
+    const next = clamp(Math.min(1, (el.clientWidth - 8) / natural));
+    tuning.current = true;
+    setZoom(next);
+    el.scrollTo({ left: 0 });
+  };
 
   // Full screen: Esc closes it, and the page behind stops scrolling.
   useEffect(() => {
@@ -150,9 +169,29 @@ export default function FlowTree({ root, currentLabel = 'You are here', ...rest 
   if (!root) return null;
 
   const tree = (
-    <ul className="!justify-start sm:!justify-center">
-      <Branch q={root} currentLabel={currentLabel} {...rest} />
-    </ul>
+    <div style={{ zoom }}>
+      <ul className="w-max min-w-full">
+        <Branch q={root} currentLabel={currentLabel} {...rest} />
+      </ul>
+    </div>
+  );
+
+  const zoomBar = (
+    <div className="flex items-center gap-1" role="group" aria-label="Zoom">
+      <Button variant="secondary" className="!px-3 !py-1.5" aria-label="Zoom out" onClick={() => setZoom((z) => clamp(z - 0.15))}>
+        −
+      </Button>
+      <span className="w-12 text-center text-xs font-semibold tabular-nums">{Math.round(zoom * 100)}%</span>
+      <Button variant="secondary" className="!px-3 !py-1.5" aria-label="Zoom in" onClick={() => setZoom((z) => clamp(z + 0.15))}>
+        +
+      </Button>
+      <Button variant="secondary" className="!py-1.5" onClick={fit}>
+        Fit all
+      </Button>
+      <Button variant="secondary" className="!py-1.5" onClick={() => setZoom(1)}>
+        100%
+      </Button>
+    </div>
   );
 
   if (full) {
@@ -165,6 +204,7 @@ export default function FlowTree({ root, currentLabel = 'You are here', ...rest 
       >
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
           <h3 className="text-base font-bold">Flow diagram</h3>
+          {zoomBar}
           <Button variant="secondary" onClick={() => setFull(false)} aria-label="Close full screen">
             ✕ Close
           </Button>
@@ -178,7 +218,8 @@ export default function FlowTree({ root, currentLabel = 'You are here', ...rest 
 
   return (
     <div>
-      <div className="mb-2 flex justify-end">
+      <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
+        {zoomBar}
         <Button variant="secondary" className="!py-1.5" onClick={() => setFull(true)}>
           ⛶ Full screen
         </Button>

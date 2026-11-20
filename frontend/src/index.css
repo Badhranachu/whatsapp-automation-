@@ -9,14 +9,14 @@ body {
 .flow-tree ul {
   display: flex;
   justify-content: center;
-  padding-top: 24px;
+  padding-top: 16px;
   position: relative;
   margin: 0;
 }
 .flow-tree li {
   list-style: none;
   position: relative;
-  padding: 24px 10px 0;
+  padding: 16px 4px 0;
   text-align: center;
 }
 /* horizontal connectors between siblings */
@@ -27,7 +27,7 @@ body {
   top: 0;
   right: 50%;
   width: 50%;
-  height: 24px;
+  height: 16px;
   border-top: 2px solid #94a3b8;
 }
 .flow-tree li::after {
@@ -60,6 +60,6 @@ body {
   top: 0;
   left: 50%;
   width: 0;
-  height: 24px;
+  height: 16px;
   border-left: 2px solid #94a3b8;
 }

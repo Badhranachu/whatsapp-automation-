@@ -90,7 +90,7 @@ export default function UserManagement({ currentEmail }) {
         </p>
         <form onSubmit={submit} noValidate className="mt-4 grid gap-4 sm:grid-cols-2">
           {field('um-email', 'Email', 'email', { type: 'email', autoComplete: 'off', placeholder: 'name@example.com' })}
-          {field('um-phone', 'Phone number', 'phone_number', { type: 'tel', autoComplete: 'off', placeholder: '+919876543210' })}
+          {field('um-phone', 'Phone number', 'phone_number', { type: 'tel', autoComplete: 'off', placeholder: '9876543210' })}
           {field('um-pass', 'Password', 'password', { type: 'password', autoComplete: 'new-password' })}
           {field('um-confirm', 'Confirm password', 'confirm_password', { type: 'password', autoComplete: 'new-password' })}
           <div className="sm:col-span-2">

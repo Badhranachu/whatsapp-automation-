@@ -2,12 +2,28 @@ import { useEffect, useState } from 'react';
 import { createTemplate, deleteTemplate, getTemplates, updateTemplate } from '../services/api';
 import { askAdminPassword, showError, toastError, toastSuccess } from '../services/alerts';
 import TemplateForm from './TemplateForm';
-import { Card, KebabMenu } from './ui';
+import { Button, Card, inputClass, KebabMenu } from './ui';
+
+// A labelled value that cannot be edited.
+function ReadOnlyField({ label, value, multiline = false }) {
+  const shown = value || '—';
+  return (
+    <div className="mt-0 [&:not(:first-child)]:mt-4">
+      <div className="mb-1.5 text-sm font-semibold">{label}</div>
+      {multiline ? (
+        <textarea readOnly rows={4} value={shown} className={inputClass} />
+      ) : (
+        <input readOnly value={shown} className={inputClass} />
+      )}
+    </div>
+  );
+}
 
 export default function Templates() {
   const [templates, setTemplates] = useState([]);
   const [open, setOpen] = useState(false); // "add" form visible
   const [editingId, setEditingId] = useState(null);
+  const [viewingId, setViewingId] = useState(null); // card shown as read-only details
   const [busyId, setBusyId] = useState(null);
 
   const load = async () => {
@@ -96,10 +112,41 @@ export default function Templates() {
                 }}
               />
             </li>
+          ) : viewingId === t.id ? (
+            <li key={t.id} className="sm:col-span-2">
+              <div className="rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
+                <ReadOnlyField label="Name" value={t.name} />
+                <ReadOnlyField label="Description" value={t.description} multiline />
+                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                  <ReadOnlyField label="Created" value={new Date(t.created_at).toLocaleString()} />
+                  <ReadOnlyField label="Questions" value={String(t.question_count)} />
+                  <ReadOnlyField label="Times sent" value={String(t.run_count)} />
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <Button variant="secondary" className="flex-1" onClick={() => setViewingId(null)}>
+                    Close
+                  </Button>
+                </div>
+              </div>
+            </li>
           ) : (
-            <li key={t.id} className="flex flex-col rounded-xl bg-white p-4 ring-1 ring-slate-200">
+            <li
+              key={t.id}
+              role="button"
+              tabIndex={0}
+              aria-label={`View details of ${t.name}`}
+              onClick={() => setViewingId(t.id)}
+              onKeyDown={(e) => {
+                if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                  e.preventDefault();
+                  setViewingId(t.id);
+                }
+              }}
+              className="flex cursor-pointer flex-col rounded-xl bg-white p-4 ring-1 ring-slate-200 transition hover:ring-2 hover:ring-emerald-400"
+            >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 break-words font-semibold">{t.name}</div>
+                <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                 <KebabMenu
                   label={`Actions for ${t.name}`}
                   disabled={busyId === t.id}
@@ -114,9 +161,10 @@ export default function Templates() {
                     { label: 'Delete', danger: true, onClick: () => handleDelete(t) },
                   ]}
                 />
+                </div>
               </div>
               <p className="mt-1 flex-1 whitespace-pre-wrap break-words text-sm text-slate-600">
-                {t.description}
+                {t.description || <span className="italic text-slate-400">No description</span>}
               </p>
               <div className="mt-2 text-xs text-slate-400">
                 {new Date(t.created_at).toLocaleDateString()} · {t.question_count} question

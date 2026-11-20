@@ -19,8 +19,15 @@ class TemplateTests(APITestCase):
         names = [t['name'] for t in self.client.get('/api/templates/').json()]
         self.assertEqual(names, ['Second', 'First'])
 
-    def test_name_and_description_required(self):
+    def test_name_required(self):
         self.authed()
-        for bad in [{'name': '', 'description': 'x'}, {'name': 'x', 'description': ''},
-                    {'name': 'x'}, {'description': 'x'}, {'name': '   ', 'description': 'x'}]:
+        for bad in [{'name': '', 'description': 'x'}, {'description': 'x'},
+                    {'name': '   ', 'description': 'x'}, {'name': ''}]:
             self.assertEqual(self.client.post('/api/templates/', bad, format='json').status_code, 400, bad)
+
+    def test_description_optional(self):
+        self.authed()
+        for payload in [{'name': 'a'}, {'name': 'b', 'description': ''}, {'name': 'c', 'description': '  '}]:
+            r = self.client.post('/api/templates/', payload, format='json')
+            self.assertEqual(r.status_code, 201, payload)
+            self.assertEqual(r.json()['description'], '')

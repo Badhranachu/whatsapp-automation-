@@ -10,7 +10,7 @@ export function getToken() {
   }
 }
 
-function setToken(token) {
+export function setToken(token) {
   try {
     if (token) localStorage.setItem(TOKEN_KEY, token);
     else localStorage.removeItem(TOKEN_KEY);
@@ -78,6 +78,39 @@ export async function login(email, password) {
   return data;
 }
 
+// --- Forgot password (signed out): email -> code -> new password ---
+export const requestResetOtp = (email) => call(() => client.post('/auth/forgot-password/', { email }));
+export const verifyResetOtp = (email, otp) => call(() => client.post('/auth/verify-otp/', { email, otp }));
+export const resetPassword = (payload) => call(() => client.post('/auth/reset-password/', payload));
+
+// --- Profile (signed in) ---
+export const getProfile = () => call(() => client.get('/profile/'));
+export const updateProfile = (payload) => call(() => client.patch('/profile/', payload));
+export const uploadAvatar = (file) => {
+  const form = new FormData();
+  form.append('image', file);
+  return call(() =>
+    client.post('/profile/avatar/', form, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  );
+};
+export const removeAvatar = () => call(() => client.delete('/profile/avatar/'));
+// The picture needs the login token, so it is fetched and shown through a temporary blob URL.
+export async function getAvatarUrl() {
+  try {
+    const res = await client.get('/profile/avatar/', { responseType: 'blob' });
+    return URL.createObjectURL(res.data);
+  } catch {
+    return null;
+  }
+}
+export const sendPasswordOtp = () => call(() => client.post('/profile/password/send-otp/'));
+export const verifyPasswordOtp = (otp) => call(() => client.post('/profile/password/verify-otp/', { otp }));
+export async function changePassword(payload) {
+  const data = await call(() => client.post('/profile/password/change/', payload));
+  if (data.token) setToken(data.token); // the old login was replaced; this device keeps going
+  return data;
+}
+
 export async function logout() {
   try {
     await client.post('/auth/logout/');
@@ -116,6 +149,9 @@ export const updateTemplate = (id, name, description) =>
 export const deleteTemplate = (id, password) =>
   call(() => client.delete(`/templates/${id}/`, { data: { password } }));
 export const updateQuestion = (id, text) => call(() => client.patch(`/questions/${id}/`, { text }));
+// Closing messages only: ask the person to type one reply, saved on their run (+ optional thank-you).
+export const setReplySettings = (id, wantsReply, replyThanks) =>
+  call(() => client.patch(`/questions/${id}/`, { wants_reply: wantsReply, reply_thanks: replyThanks }));
 export const updateOption = (id, title) => call(() => client.patch(`/options/${id}/`, { title }));
 
 // Sends the template's first question (as reply buttons) to every number; returns per-number results.
@@ -125,26 +161,45 @@ export const sendTemplateFlow = (templateId, phoneNumbers) =>
 // Saved template sends ("runs"), searchable by phone number or template name.
 export const getRuns = (params = {}) => call(() => client.get('/flow-runs/', { params }));
 export const getRun = (id) => call(() => client.get(`/flow-runs/${id}/`));
-export const getTemplateStats = (id) => call(() => client.get(`/templates/${id}/stats/`));
+export const getTemplateStats = (id, params = {}) =>
+  call(() => client.get(`/templates/${id}/stats/`, { params }));
+// Downloads the CSV of a template's sends and saves it through the browser.
+export const downloadTemplateCsv = (id, params = {}) =>
+  call(async () => {
+    const res = await client.get(`/templates/${id}/export/`, { params, responseType: 'blob' });
+    const url = URL.createObjectURL(res.data);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `template-${id}-sends.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    return true;
+  });
 
 export const getFlow =(templateId) => call(() => client.get(`/templates/${templateId}/flow/`));
 // `options` (optional list of titles) is saved together with the question, all or nothing.
-export const addQuestion = (templateId, text, optionId, options) =>
+export const addQuestion = (templateId, text, optionId, options, extra = {}) =>
   call(() =>
     client.post(`/templates/${templateId}/questions/`, {
       text,
       option_id: optionId ?? null,
       ...(options ? { options } : {}),
+      ...extra,
     }),
   );
+// Updates a flow from JSON that carries the saved ids: ids are updated in place, the rest added.
+export const syncFlow = (templateId, flow) =>
+  call(() => client.post(`/templates/${templateId}/sync-flow/`, flow));
+// Builds the whole flow from a nested JSON object (all or nothing).
+export const importFlow = (templateId, flow) =>
+  call(() => client.post(`/templates/${templateId}/import-flow/`, flow));
 export const addOption = (questionId, title) =>
   call(() => client.post(`/questions/${questionId}/options/`, { title }));
 export const deleteQuestion = (questionId) => call(() => client.delete(`/questions/${questionId}/`));
 export const deleteOption = (optionId) => call(() => client.delete(`/options/${optionId}/`));
 // User management (super admins only).
+export const getAuditLogs = (params = {}) => call(() => client.get('/audit-logs/', { params }));
 export const getUsers = () => call(() => client.get('/users/'));
 export const createUser = (payload) => call(() => client.post('/users/', payload));
 export const deleteUser = (id, password) =>
   call(() => client.delete(`/users/${id}/`, { data: { password } }));
-export const sendOptions = (phoneNumber) =>
-  call(() => client.post('/send-options/', { phone_number: phoneNumber }));

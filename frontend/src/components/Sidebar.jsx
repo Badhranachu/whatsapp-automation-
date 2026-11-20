@@ -3,13 +3,14 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 export const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
   { id: 'template', label: 'Send Message', icon: '✉️' },
-  { id: 'options', label: 'Send Options', icon: '🔘' },
   { id: 'templates', label: 'Templates', icon: '📝' },
   { id: 'questions', label: 'Questions', icon: '❓' },
   { id: 'templatesend', label: 'Template Send', icon: '🚀' },
   { id: 'diagrams', label: 'Diagram Templates', icon: '🗺️' },
   { id: 'history', label: 'History', icon: '🕘' },
+  { id: 'profile', label: 'Profile', icon: '👤' },
   { id: 'users', label: 'User Management', icon: '👥', adminOnly: true },
+  { id: 'audit', label: 'Audit Log', icon: '🛡️', adminOnly: true },
 ];
 
 // true while the screen is phone-sized (below Tailwind's md breakpoint)

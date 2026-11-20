@@ -10,13 +10,12 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from . import audit
 from .models import MessageLog, MessageTemplate, log_message
 from .serializers import MessageTemplateSerializer, SendMessageSerializer
 from .services import (
-    OPTIONS_BODY,
     ConfigurationError,
     WhatsAppError,
-    send_options_message,
     send_template_message,
     send_uploaded_image,
 )
@@ -42,11 +41,13 @@ class LoginView(APIView):
             if candidate:
                 user = authenticate(request, username=candidate.get_username(), password=password)
         if not user or not user.is_active:
+            audit.record(request, 'login_failed', 'session', label=email[:150])
             return Response(
                 {'success': False, 'error': 'Invalid email or password.'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         token, _ = Token.objects.get_or_create(user=user)
+        audit.record(request, 'login', 'session', user.id, user.email, user=user)
         return Response({
             'success': True, 'token': token.key, 'email': user.email,
             'is_superuser': user.is_superuser,
@@ -55,6 +56,7 @@ class LoginView(APIView):
 
 class LogoutView(APIView):
     def post(self, request):
+        audit.record(request, 'logout', 'session', request.user.id, request.user.email)
         Token.objects.filter(user=request.user).delete()
         return Response({'success': True})
 
@@ -118,36 +120,6 @@ class MessageHistoryView(APIView):
         ])
 
 
-class SendOptionsView(APIView):
-    """Send 'Hello' with two reply buttons; the webhook echoes the chosen one."""
-
-    def post(self, request):
-        serializer = SendMessageSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(
-                {'success': False, 'message': 'Invalid input.', 'error': serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            phone = serializer.validated_data['phone_number']
-            message_id = send_options_message(phone)
-            log_message(MessageLog.OUT, phone, 'options', OPTIONS_BODY, message_id)
-        except ConfigurationError as exc:
-            return Response(
-                {'success': False, 'message': FAIL, 'error': str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        except WhatsAppError as exc:
-            return Response(
-                {'success': False, 'message': FAIL, 'error': str(exc)},
-                status=exc.status_code,
-            )
-        return Response(
-            {'success': True, 'message': 'Message accepted by Meta.', 'message_id': message_id},
-            status=status.HTTP_200_OK,
-        )
-
-
 class SendMessageView(APIView):
     parser_classes = [JSONParser, MultiPartParser]
 
@@ -170,12 +142,14 @@ class SendMessageView(APIView):
                     MessageLog.OUT, data['phone_number'], 'image',
                     caption or image.name, message_id,
                 )
+                audit.record(request, 'send', 'message', message_id, data['phone_number'], {'type': 'image'})
             else:
                 message_id = send_template_message(data['phone_number'])
                 log_message(
                     MessageLog.OUT, data['phone_number'], 'template',
                     settings.WHATSAPP_TEMPLATE_NAME, message_id,
                 )
+                audit.record(request, 'send', 'message', message_id, data['phone_number'], {'type': 'template'})
         except ConfigurationError as exc:
             return Response(
                 {'success': False, 'message': FAIL, 'error': str(exc)},
@@ -199,6 +173,13 @@ class TemplateListCreateView(generics.ListCreateAPIView):
     serializer_class = MessageTemplateSerializer
     pagination_class = None
 
+    def perform_create(self, serializer):
+        obj = serializer.save()
+        audit.record(
+            self.request, 'create', 'template', obj.id, obj.name,
+            {'name': obj.name, 'description': obj.description},
+        )
+
 
 class TemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
     """View, edit (PATCH/PUT) or delete one saved template and its question flow."""
@@ -212,6 +193,21 @@ class TemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
             self.throttle_scope = 'admin_delete'
             return [ScopedRateThrottle()]
         return super().get_throttles()
+
+    def perform_update(self, serializer):
+        before = {'name': serializer.instance.name, 'description': serializer.instance.description}
+        obj = serializer.save()
+        changes = audit.diff(before, {'name': obj.name, 'description': obj.description})
+        audit.record(self.request, 'update', 'template', obj.id, obj.name, changes)
+
+    def perform_destroy(self, instance):
+        info = {
+            'name': instance.name, 'description': instance.description,
+            'questions': instance.questions.count(),
+        }
+        pk, label = instance.id, instance.name
+        instance.delete()
+        audit.record(self.request, 'delete', 'template', pk, label, info)
 
     def destroy(self, request, *args, **kwargs):
         """Deleting a template also deletes its questions and saved flow, so it needs the

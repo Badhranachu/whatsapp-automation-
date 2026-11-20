@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Login from './components/Login';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
@@ -9,16 +9,40 @@ import Questions from './components/Questions';
 import TemplateSend from './components/TemplateSend';
 import DiagramTemplates from './components/DiagramTemplates';
 import UserManagement from './components/UserManagement';
+import AuditLog from './components/AuditLog';
+import Profile from './components/Profile';
+import ForgotPassword from './components/ForgotPassword';
 import {
   getMe,
   getToken,
   logout,
   sendMessage,
-  sendOptions,
   setUnauthorizedHandler,
 } from './services/api';
 import { toastError } from './services/alerts';
 import { confirmLeave } from './services/unsaved';
+
+// Every sidebar page has its own address, so it can be bookmarked, reloaded and shared,
+// and the browser Back / Forward buttons move between pages.
+const TAB_PATHS = {
+  dashboard: '/dashboard',
+  template: '/send-message',
+  templates: '/templates',
+  questions: '/questions',
+  templatesend: '/template-send',
+  diagrams: '/diagrams',
+  history: '/history',
+  profile: '/profile',
+  users: '/users',
+  audit: '/audit-log',
+};
+const ADMIN_TABS = new Set(['users', 'audit']);
+const FORGOT_PATH = '/forgot-password';
+
+function tabFromPath(pathname) {
+  const clean = pathname.replace(/\/+$/, '') || '/';
+  return Object.keys(TAB_PATHS).find((id) => TAB_PATHS[id] === clean) ?? 'dashboard';
+}
 
 // "Install app" support: Chrome/Edge/Android fire this event when the PWA can be installed.
 function useInstallPrompt() {
@@ -63,7 +87,11 @@ export default function App() {
   const [email, setEmail] = useState(null);
   const [isSuperuser, setIsSuperuser] = useState(false);
   const [checking, setChecking] = useState(Boolean(getToken()));
-  const [tab, setTab] = useState('dashboard');
+  const [tab, setTab] = useState(() => tabFromPath(window.location.pathname));
+  const tabRef = useRef(tab);
+  const [forgot, setForgot] = useState(() => window.location.pathname === FORGOT_PATH);
+  const [lastEmail, setLastEmail] = useState('');
+  tabRef.current = tab;
   const install = useInstallPrompt();
   const online = useOnline();
 
@@ -87,17 +115,52 @@ export default function App() {
       .finally(() => setChecking(false));
   }, []);
 
+  // Keep the address bar in step with the page (also fixes "/" and unknown addresses).
+  useEffect(() => {
+    if (!email) return; // signed out: the login / forgot-password address stays as it is
+    const path = TAB_PATHS[tab];
+    if (window.location.pathname !== path) window.history.replaceState(null, '', path);
+  }, [tab, email]);
+
+  // Browser Back / Forward: change page, but ask first when a form has unsaved data.
+  useEffect(() => {
+    const onPop = async () => {
+      setForgot(window.location.pathname === FORGOT_PATH);
+      const next = tabFromPath(window.location.pathname);
+      if (next === tabRef.current) return;
+      if (await confirmLeave()) {
+        setTab(next);
+      } else {
+        window.history.pushState(null, '', TAB_PATHS[tabRef.current]); // stay on this page
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
   // Moving to another page asks first when a form has unsaved data.
   const go = async (id) => {
     if (id === tab) return;
-    if (await confirmLeave()) setTab(id);
+    if (await confirmLeave()) {
+      window.history.pushState(null, '', TAB_PATHS[id]);
+      setTab(id);
+    }
   };
+
+  // A non-admin who opens an admin address lands on the dashboard.
+  useEffect(() => {
+    if (email && !isSuperuser && ADMIN_TABS.has(tab)) {
+      window.history.replaceState(null, '', TAB_PATHS.dashboard);
+      setTab('dashboard');
+    }
+  }, [email, isSuperuser, tab]);
 
   const handleLogout = async () => {
     if (!(await confirmLeave())) return;
     await logout();
     setEmail(null);
     setIsSuperuser(false);
+    window.history.replaceState(null, '', TAB_PATHS.dashboard);
     setTab('dashboard');
   };
 
@@ -105,8 +168,28 @@ export default function App() {
     return <div className="flex justify-center py-16 text-sm text-slate-500">Loading...</div>;
   }
   if (!email) {
+    const showLogin = () => {
+      window.history.pushState(null, '', '/');
+      setForgot(false);
+    };
+    if (forgot) {
+      return (
+        <ForgotPassword
+          onBack={showLogin}
+          onDone={(address) => {
+            setLastEmail(address);
+            showLogin(); // password updated: back to the login form
+          }}
+        />
+      );
+    }
     return (
       <Login
+        initialEmail={lastEmail}
+        onForgot={() => {
+          window.history.pushState(null, '', FORGOT_PATH);
+          setForgot(true);
+        }}
         onLoggedIn={(data) => {
           setEmail(data.email);
           setIsSuperuser(Boolean(data.is_superuser));
@@ -134,20 +217,14 @@ export default function App() {
             send={(phone, opts) => sendMessage(phone, opts?.image, opts?.caption)}
           />
         )}
-        {tab === 'options' && (
-          <SendForm
-            title="Send Options"
-            description="Sends a question with two reply buttons. Tapping a button sends the reply image back. Works only if the person messaged your number in the last 24 hours."
-            buttonLabel="Send Options"
-            send={sendOptions}
-          />
-        )}
         {tab === 'templates' && <Templates />}
         {tab === 'questions' && <Questions />}
         {tab === 'templatesend' && <TemplateSend />}
         {tab === 'diagrams' && <DiagramTemplates />}
         {tab === 'history' && <History />}
+        {tab === 'profile' && <Profile />}
         {tab === 'users' && isSuperuser && <UserManagement currentEmail={email} />}
+        {tab === 'audit' && isSuperuser && <AuditLog />}
       </main>
     </div>
   );

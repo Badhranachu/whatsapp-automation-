@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { getFlow, getRun, getRuns, getTemplates, getTemplateStats } from '../services/api';
+import { downloadTemplateCsv, getFlow, getRun, getRuns, getTemplates, getTemplateStats } from '../services/api';
 import { toastError } from '../services/alerts';
+import TemplateInsights from './TemplateInsights';
 import FlowTree from './FlowTree';
 import { STATUS_LABELS } from './History';
 import { Button, Card, inputClass } from './ui';
@@ -192,6 +193,8 @@ function TemplateView({ templateId, onBack, onOpenRun }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
   const [debounced, setDebounced] = useState('');
+  const [range, setRange] = useState({ from: '', to: '' });
+  const rangeParams = { ...(range.from && { from: range.from }), ...(range.to && { to: range.to }) };
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query.trim()), 300);
@@ -202,8 +205,8 @@ function TemplateView({ templateId, onBack, onOpenRun }) {
     async (isCancelled) => {
       const [f, s, r] = await Promise.all([
         getFlow(templateId),
-        getTemplateStats(templateId),
-        getRuns({ template: templateId, q: debounced, status, limit: 200 }),
+        getTemplateStats(templateId, rangeParams),
+        getRuns({ template: templateId, q: debounced, status, limit: 200, ...rangeParams }),
       ]);
       if (!isCancelled()) {
         setFlow(f);
@@ -211,7 +214,7 @@ function TemplateView({ templateId, onBack, onOpenRun }) {
         setRuns(r);
       }
     },
-    [templateId, debounced, status],
+    [templateId, debounced, status, range.from, range.to],
   );
 
   if (!flow) {
@@ -250,6 +253,13 @@ function TemplateView({ templateId, onBack, onOpenRun }) {
         </div>
       </Card>
 
+      <TemplateInsights
+        stats={stats}
+        range={range}
+        onRange={setRange}
+        onExport={() => downloadTemplateCsv(templateId, rangeParams).catch((err) => toastError(err.message))}
+      />
+
       <div className="grid gap-4 lg:grid-cols-5">
         <div className="order-2 min-w-0 lg:order-1 lg:col-span-2">
           <Card>
@@ -287,11 +297,14 @@ function TemplateView({ templateId, onBack, onOpenRun }) {
                   questionNote={(q) => {
                     const here = stats?.users_here?.[q.id] ?? 0;
                     const reached = stats?.reached?.[q.id] ?? 0;
-                    return reached || here ? `${here} here · ${reached} reached` : null;
+                    const f = stats?.funnel?.find((x) => x.id === q.id);
+                    const drop = f && f.reached && !f.is_end_note ? ` · ${f.drop_off_pct}% dropped` : '';
+                    return reached || here ? `${here} here · ${reached} reached${drop}` : null;
                   }}
                   optionNote={(o) => {
                     const n = stats?.option_taps?.[o.id];
-                    return n ? `${n}×` : null;
+                    const share = stats?.funnel?.flatMap((f) => f.options).find((x) => x.id === o.id)?.share_pct;
+                    return n ? `${n}× · ${share}%` : null;
                   }}
                 />
               </div>
@@ -311,6 +324,7 @@ const STEP_INFO = {
   question_sent: { icon: '❓', label: 'Question sent' },
   option_tapped: { icon: '👆', label: 'Tapped option' },
   send_failed: { icon: '⚠️', label: 'Could not send' },
+  reply_received: { icon: '✍️', label: 'Typed reply' },
 };
 
 function RunView({ runId, onBack }) {

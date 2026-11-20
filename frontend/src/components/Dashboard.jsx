@@ -50,7 +50,6 @@ export default function Dashboard({ onNavigate }) {
 
       <div className="mt-5 flex flex-wrap gap-2">
         <Button onClick={() => onNavigate('template')}>Send Message</Button>
-        <Button onClick={() => onNavigate('options')}>Send Options</Button>
         <Button variant="secondary" onClick={() => onNavigate('questions')}>
           Build Questions
         </Button>

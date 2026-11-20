@@ -1,5 +1,7 @@
 import re
 
+from django.conf import settings
+
 from rest_framework import serializers
 
 from .models import MessageTemplate
@@ -12,6 +14,24 @@ IMAGE_SIGNATURES = {
     b'\x89PNG\r\n\x1a\n': 'image/png',
     b'\xff\xd8\xff': 'image/jpeg',
 }
+
+
+NATIONAL_LENGTH = 10  # a number typed without country code, e.g. 9876543210
+
+
+def add_default_country_code(digits):
+    """Prefix the configured default country code to a bare 10-digit national number.
+
+    Numbers typed with +, 00 or a country code already are left alone.
+    """
+    code = str(getattr(settings, 'DEFAULT_COUNTRY_CODE', '') or '').lstrip('+')
+    if not code or not digits.isdigit():
+        return digits
+    if len(digits) == NATIONAL_LENGTH + 1 and digits.startswith('0'):
+        digits = digits[1:]  # drop the local trunk zero
+    if len(digits) == NATIONAL_LENGTH:
+        return code + digits
+    return digits
 
 
 class SendMessageSerializer(serializers.Serializer):
@@ -30,6 +50,8 @@ class SendMessageSerializer(serializers.Serializer):
             cleaned = cleaned[1:]
         elif cleaned.startswith('00'):
             cleaned = cleaned[2:]
+        else:
+            cleaned = add_default_country_code(cleaned)
         if not E164_RE.match(cleaned):
             raise serializers.ValidationError(
                 'Enter a valid international phone number (E.164), e.g. +919876543210.'
@@ -57,7 +79,7 @@ class SendMessageSerializer(serializers.Serializer):
 
 class MessageTemplateSerializer(serializers.ModelSerializer):
     name = serializers.CharField(max_length=100)
-    description = serializers.CharField(max_length=1024)
+    description = serializers.CharField(max_length=1024, required=False, allow_blank=True, default='')
     question_count = serializers.SerializerMethodField()
     run_count = serializers.SerializerMethodField()
 

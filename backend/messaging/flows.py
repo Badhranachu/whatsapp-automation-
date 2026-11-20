@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import audit
 from .models import FlowRun, FlowStep, MessageTemplate, Option, Question, add_step
 
 MAX_OPTIONS = 3  # WhatsApp reply buttons: at most 3 per message
@@ -46,6 +47,8 @@ def build_flow(template):
             'id': q.id,
             'text': q.text,
             'depth': depth,
+            'wants_reply': q.wants_reply,
+            'reply_thanks': q.reply_thanks,
             'options': [
                 {
                     'id': o.id,
@@ -114,6 +117,10 @@ class QuestionCreateView(APIView):
         titles, error = _clean_titles(request.data.get('options'))
         if error:
             return _bad(error)
+        try:
+            wants, thanks = _reply_fields(request.data, 'Question', bool(titles))
+        except ValueError as exc:
+            return _bad(str(exc))
 
         option_id = request.data.get('option_id')
         parent = None
@@ -130,10 +137,227 @@ class QuestionCreateView(APIView):
                 return _bad(f'Flows can be at most {MAX_DEPTH} questions deep.')
 
         with transaction.atomic():
-            q = Question.objects.create(template=template, text=text, parent_option=parent)
+            q = Question.objects.create(
+                template=template, text=text, parent_option=parent, wants_reply=wants, reply_thanks=thanks
+            )
             for title in titles:
                 Option.objects.create(question=q, title=title)
+        audit.record(
+            request, 'create', 'question', q.id, q.text,
+            {'template': template.name, 'options': titles, 'under_option': parent.title if parent else None},
+        )
         return Response({'id': q.id, 'text': q.text}, status=status.HTTP_201_CREATED)
+
+
+MAX_IMPORT_QUESTIONS = 200
+
+
+def _import_node(template, node, parent, path, counter):
+    """Validate one JSON node and create it (and everything below it). Raises ValueError."""
+    if not isinstance(node, dict):
+        raise ValueError(f'{path}: expected an object with "text".')
+    counter[0] += 1
+    if counter[0] > MAX_IMPORT_QUESTIONS:
+        raise ValueError(f'A flow can have at most {MAX_IMPORT_QUESTIONS} questions.')
+    text = str(node.get('text', '')).strip()
+    if not text:
+        raise ValueError(f'{path}: "text" is required.')
+    if len(text) > MAX_TEXT:
+        raise ValueError(f'{path}: text must be {MAX_TEXT} characters or fewer.')
+    raw_options = node.get('options') or []
+    if not isinstance(raw_options, list):
+        raise ValueError(f'{path}: "options" must be a list.')
+    if len(raw_options) > MAX_OPTIONS:
+        raise ValueError(f'{path}: at most {MAX_OPTIONS} options (WhatsApp button limit).')
+
+    wants, thanks = _reply_fields(node, path, bool(raw_options))
+    question = Question.objects.create(
+        template=template, text=text, parent_option=parent, wants_reply=wants, reply_thanks=thanks
+    )
+    seen = set()
+    for i, raw in enumerate(raw_options, start=1):
+        here = f'{path} > option {i}'
+        item = raw
+        if not isinstance(item, dict):
+            raise ValueError(f'{here}: expected an object with "title" and "next".')
+        title = str(item.get('title', '')).strip()
+        if not title:
+            raise ValueError(f'{here}: "title" is required.')
+        if len(title) > MAX_TITLE:
+            raise ValueError(f'{here}: title must be {MAX_TITLE} characters or fewer.')
+        if title.casefold() in seen:
+            raise ValueError(f'{here}: duplicate option "{title}".')
+        seen.add(title.casefold())
+        option = Option.objects.create(question=question, title=title)
+        nxt = item.get('next')
+        if nxt is None:
+            # Every answer must lead somewhere: another question or a closing message.
+            raise ValueError(f'{here} "{title}": needs a "next" (a follow-up question or a closing message).')
+        # A "next" without options is a closing message (end note).
+        _import_node(template, nxt, option, f'{here} "{title}"', counter)
+
+
+class FlowImportView(APIView):
+    """Build a template's whole question flow from nested JSON (all or nothing).
+
+    Body: {"text": "Question", "options": [{"title": "Yes", "next": {"text": "Closing message"}}]}
+    A "next" with no options is a closing message. Every option needs a "next". Only works while
+    the template has no questions.
+    """
+
+    def post(self, request, template_id):
+        template = get_object_or_404(MessageTemplate, pk=template_id)
+        if Question.objects.filter(template=template).exists():
+            return _bad('This template already has questions. Delete them first to import a new flow.')
+        try:
+            with transaction.atomic():
+                _import_node(template, request.data, None, 'First question', [0])
+        except ValueError as exc:
+            return _bad(str(exc))
+        root, stats = build_flow(template)
+        audit.record(request, 'import', 'flow', template.id, template.name, stats)
+        return Response({'root': root, 'stats': stats}, status=status.HTTP_201_CREATED)
+
+
+def _reply_fields(raw, path, has_options):
+    """Validate "wants_reply" / "reply_thanks" from JSON. Returns (wants_reply, thanks)."""
+    wants = raw.get('wants_reply', False)
+    if not isinstance(wants, bool):
+        raise ValueError(f'{path}: "wants_reply" must be true or false.')
+    thanks = str(raw.get('reply_thanks') or '').strip()
+    if len(thanks) > MAX_TEXT:
+        raise ValueError(f'{path}: "reply_thanks" must be {MAX_TEXT} characters or fewer.')
+    if has_options and (wants or thanks):
+        raise ValueError(f'{path}: only a closing message (no options) can collect a typed reply.')
+    return wants, (thanks if wants else '')
+
+
+def _node_id(raw, path, what):
+    """An optional integer "id" from the JSON, or None."""
+    value = raw.get('id')
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f'{path}: {what} "id" must be a number.')
+    return value
+
+
+def _sync_node(template, node, option, path, counter, stats):
+    """Apply one question node (and everything below it) to the saved flow.
+
+    A node whose "id" matches the saved item updates it in place; a node (or option) without an
+    "id" is created, unless the slot is already filled, in which case the saved item is updated.
+    Anything missing from the JSON is left untouched. Raises ValueError on bad input.
+    """
+    if not isinstance(node, dict):
+        raise ValueError(f'{path}: expected an object with "text".')
+    counter[0] += 1
+    if counter[0] > MAX_IMPORT_QUESTIONS:
+        raise ValueError(f'A flow can have at most {MAX_IMPORT_QUESTIONS} questions.')
+    text = str(node.get('text', '')).strip()
+    if not text:
+        raise ValueError(f'{path}: "text" is required.')
+    if len(text) > MAX_TEXT:
+        raise ValueError(f'{path}: text must be {MAX_TEXT} characters or fewer.')
+    raw_options = node.get('options') or []
+    if not isinstance(raw_options, list):
+        raise ValueError(f'{path}: "options" must be a list.')
+
+    wanted = _node_id(node, path, 'question')
+    existing = (
+        Question.objects.filter(parent_option=option).first()
+        if option
+        else Question.objects.filter(template=template, parent_option__isnull=True).first()
+    )
+    if existing:
+        if wanted is not None and wanted != existing.id:
+            raise ValueError(f'{path}: question id {wanted} is not the question saved here ({existing.id}).')
+        changed = []
+        if existing.text != text:
+            existing.text = text
+            changed.append('text')
+        if 'wants_reply' in node or 'reply_thanks' in node:
+            wants, thanks = _reply_fields(node, path, bool(raw_options) or existing.options.exists())
+            if (existing.wants_reply, existing.reply_thanks) != (wants, thanks):
+                existing.wants_reply, existing.reply_thanks = wants, thanks
+                changed += ['wants_reply', 'reply_thanks']
+        if changed:
+            existing.save(update_fields=changed)
+            stats['updated_questions'] += 1
+        question = existing
+    else:
+        if wanted is not None:
+            raise ValueError(f'{path}: question id {wanted} does not exist here. Remove "id" to add a new question.')
+        wants, thanks = _reply_fields(node, path, bool(raw_options))
+        question = Question.objects.create(
+            template=template, text=text, parent_option=option, wants_reply=wants, reply_thanks=thanks
+        )
+        stats['created_questions'] += 1
+
+    saved = {o.id: o for o in question.options.all()}
+    mentioned = set()
+    titles = {}  # option id (or new index) -> final title, to check duplicates and the limit
+    parsed = []
+    for i, raw in enumerate(raw_options, start=1):
+        here = f'{path} > option {i}'
+        if not isinstance(raw, dict):
+            raise ValueError(f'{here}: expected an object with "title".')
+        title = str(raw.get('title', '')).strip()
+        if not title:
+            raise ValueError(f'{here}: "title" is required.')
+        if len(title) > MAX_TITLE:
+            raise ValueError(f'{here}: title must be {MAX_TITLE} characters or fewer.')
+        oid = _node_id(raw, here, 'option')
+        if oid is not None:
+            if oid not in saved:
+                raise ValueError(f'{here}: option id {oid} does not belong to this question.')
+            if oid in mentioned:
+                raise ValueError(f'{here}: option id {oid} appears twice.')
+            mentioned.add(oid)
+        parsed.append((here, oid, title, raw.get('next')))
+        titles[oid if oid is not None else f'new{i}'] = title
+    for oid, o in saved.items():
+        titles.setdefault(oid, o.title)  # options not in the JSON keep their text
+    if len(titles) > MAX_OPTIONS:
+        raise ValueError(f'{path}: at most {MAX_OPTIONS} options (WhatsApp button limit).')
+    folded = [t.casefold() for t in titles.values()]
+    if len(set(folded)) != len(folded):
+        raise ValueError(f'{path}: options must be different from each other.')
+
+    for here, oid, title, nxt in parsed:
+        if oid is None:
+            if nxt is None:
+                raise ValueError(f'{here} "{title}": needs a "next" (a follow-up question or a closing message).')
+            opt = Option.objects.create(question=question, title=title)
+            stats['created_options'] += 1
+        else:
+            opt = saved[oid]
+            if opt.title != title:
+                opt.title = title
+                opt.save(update_fields=['title'])
+                stats['updated_options'] += 1
+        if nxt is not None:
+            _sync_node(template, nxt, opt, f'{here} "{title}"', counter, stats)
+
+
+class FlowSyncView(APIView):
+    """Update a template's flow from JSON that carries the saved "id"s (all or nothing).
+
+    Items with an id are updated in place, items without one are added, and items left out are
+    not deleted. Body: the same nested shape the flow JSON box shows.
+    """
+
+    def post(self, request, template_id):
+        template = get_object_or_404(MessageTemplate, pk=template_id)
+        stats = {'created_questions': 0, 'updated_questions': 0, 'created_options': 0, 'updated_options': 0}
+        try:
+            with transaction.atomic():
+                _sync_node(template, request.data, None, 'First question', [0], stats)
+        except ValueError as exc:
+            return _bad(str(exc))
+        root, flow_stats = build_flow(template)
+        audit.record(request, 'update', 'flow', template.id, template.name, stats)
+        return Response({'root': root, 'stats': flow_stats, 'changes': stats})
 
 
 def _title_error(question, title, exclude_id=None):
@@ -160,6 +384,7 @@ class OptionCreateView(APIView):
         if error:
             return _bad(error)
         o = Option.objects.create(question=question, title=title)
+        audit.record(request, 'create', 'option', o.id, title, {'question': question.text})
         return Response({'id': o.id, 'title': o.title}, status=status.HTTP_201_CREATED)
 
 
@@ -168,17 +393,37 @@ class QuestionDeleteView(APIView):
 
     def patch(self, request, question_id):
         question = get_object_or_404(Question, pk=question_id)
-        text = str(request.data.get('text', '')).strip()
+        before = {'text': question.text, 'wants_reply': question.wants_reply, 'reply_thanks': question.reply_thanks}
+        text = str(request.data.get('text', question.text)).strip()
         if not text:
             return _bad('Question text is required.')
         if len(text) > MAX_TEXT:
             return _bad(f'Question must be {MAX_TEXT} characters or fewer.')
-        question.text = text
-        question.save(update_fields=['text'])
-        return Response({'id': question.id, 'text': question.text})
+        wants, thanks = question.wants_reply, question.reply_thanks
+        if 'wants_reply' in request.data or 'reply_thanks' in request.data:
+            merged = {'wants_reply': question.wants_reply, 'reply_thanks': question.reply_thanks, **request.data}
+            try:
+                wants, thanks = _reply_fields(merged, 'Question', question.options.exists())
+            except ValueError as exc:
+                return _bad(str(exc))
+        question.text, question.wants_reply, question.reply_thanks = text, wants, thanks
+        question.save(update_fields=['text', 'wants_reply', 'reply_thanks'])
+        audit.record(
+            request, 'update', 'question', question.id, text,
+            audit.diff(before, {'text': text, 'wants_reply': wants, 'reply_thanks': thanks}),
+        )
+        return Response({
+            'id': question.id, 'text': question.text,
+            'wants_reply': question.wants_reply, 'reply_thanks': question.reply_thanks,
+        })
 
     def delete(self, request, question_id):
-        get_object_or_404(Question, pk=question_id).delete()
+        question = get_object_or_404(Question, pk=question_id)
+        audit.record(
+            request, 'delete', 'question', question.id, question.text,
+            {'template': question.template.name, 'options': [o.title for o in question.options.all()]},
+        )
+        question.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -191,12 +436,16 @@ class OptionDeleteView(APIView):
         error = _title_error(option.question, title, exclude_id=option.id)
         if error:
             return _bad(error)
+        old = option.title
         option.title = title
         option.save(update_fields=['title'])
+        audit.record(request, 'update', 'option', option.id, title, audit.diff({'title': old}, {'title': title}))
         return Response({'id': option.id, 'title': option.title})
 
     def delete(self, request, option_id):
-        get_object_or_404(Option, pk=option_id).delete()
+        option = get_object_or_404(Option, pk=option_id)
+        audit.record(request, 'delete', 'option', option.id, option.title, {'question': option.question.text})
+        option.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -306,6 +555,10 @@ class TemplateSendView(APIView):
                     {'phone_number': number, 'success': False, 'error': str(exc), 'run_id': run.id}
                 )
         sent = sum(1 for r in results if r['success'])
+        audit.record(
+            request, 'send', 'template_send', template.id, template.name,
+            {'numbers': numbers, 'sent': sent, 'failed': len(results) - sent},
+        )
         return Response({
             'success': sent == len(results),
             'message': f'{sent} of {len(results)} accepted by Meta.',

@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from . import audit
 from .models import UserProfile
 from .serializers import SendMessageSerializer
 
@@ -91,6 +92,10 @@ class UserListCreateView(APIView):
             user.is_superuser = True
             user.save(update_fields=['is_staff', 'is_superuser'])
             UserProfile.objects.create(user=user, phone_number=data['phone_number'])
+        audit.record(
+            request, 'create', 'user', user.id, user.email,
+            {'email': user.email, 'phone_number': data['phone_number'], 'role': 'super_admin'},
+        )
         return Response({'success': True, 'user': describe(user)}, status=status.HTTP_201_CREATED)
 
 
@@ -116,5 +121,6 @@ class UserDeleteView(APIView):
                 {'success': False, 'error': 'You cannot delete your own account.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        audit.record(request, 'delete', 'user', target.id, target.email, {'email': target.email})
         target.delete()  # also removes the profile and API token
         return Response(status=status.HTTP_204_NO_CONTENT)

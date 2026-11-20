@@ -36,27 +36,6 @@ def tap_payload(sender='919876543210', title='hello hello'):
 
 
 @override_settings(**CREDS)
-class SendOptionsTests(APITestCase):
-    def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
-
-    @patch('messaging.services.requests.post')
-    def test_sends_two_reply_buttons(self, mock_post):
-        mock_post.return_value = fake_response(200, {'messages': [{'id': 'wamid.x'}]})
-        r = self.client.post('/api/send-options/', {'phone_number': '+91 98765 43210'}, format='json')
-        self.assertEqual(r.status_code, 200)
-        payload = mock_post.call_args.kwargs['json']
-        self.assertEqual(payload['type'], 'interactive')
-        self.assertEqual(payload['to'], '919876543210')
-        buttons = payload['interactive']['action']['buttons']
-        self.assertEqual([b['reply']['title'] for b in buttons], ['yes I am', 'yes, how do you know'])
-
-    def test_invalid_phone(self):
-        r = self.client.post('/api/send-options/', {'phone_number': 'abc'}, format='json')
-        self.assertEqual(r.status_code, 400)
-
-
-@override_settings(**CREDS)
 class WebhookTests(ReplyImageMixin, TestCase):
     def test_verification_ok(self):
         r = self.client.get('/webhook', {
@@ -122,7 +101,7 @@ class HistoryTests(ReplyImageMixin, APITestCase):
         from messaging.models import MessageLog
 
         mock_post.return_value = fake_response(200, {'messages': [{'id': 'wamid.out1'}]})
-        self.client.post('/api/send-options/', {'phone_number': '919876543210'}, format='json')
+        self.client.post('/api/send-message/', {'phone_number': '919876543210'}, format='json')
 
         mock_post.side_effect = [
             fake_response(200, {'id': 'media123'}),
@@ -134,7 +113,7 @@ class HistoryTests(ReplyImageMixin, APITestCase):
         self.assertEqual(MessageLog.objects.count(), 3)
         rows = self.client.get('/api/messages/').json()
         self.assertEqual([(r['direction'], r['message_type']) for r in rows],
-                         [('out', 'image'), ('in', 'button_reply'), ('out', 'options')])
+                         [('out', 'image'), ('in', 'button_reply'), ('out', 'template')])
         self.assertEqual(rows[1]['content'], 'yes I am')
         self.assertNotIn('test-token', json.dumps(rows))
 
@@ -143,7 +122,7 @@ class HistoryTests(ReplyImageMixin, APITestCase):
         from messaging.models import MessageLog
 
         mock_post.return_value = fake_response(400, {'error': {'message': 'nope', 'code': 1}})
-        self.client.post('/api/send-options/', {'phone_number': '919876543210'}, format='json')
+        self.client.post('/api/send-message/', {'phone_number': '919876543210'}, format='json')
         self.assertEqual(MessageLog.objects.count(), 0)
 
 

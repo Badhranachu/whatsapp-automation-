@@ -11,8 +11,8 @@ export default function TemplateForm({ initial, submitLabel, onSubmit, onCancel 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (saving) return;
-    if (!name.trim() || !description.trim()) {
-      showError('Name and description are both required.', 'Missing details');
+    if (!name.trim()) {
+      showError('Please enter a template name.', 'Missing name');
       return;
     }
     setSaving(true);
@@ -42,7 +42,7 @@ export default function TemplateForm({ initial, submitLabel, onSubmit, onCancel 
         autoFocus
       />
       <label htmlFor={`${id}-desc`} className="mb-1.5 mt-4 block text-sm font-semibold">
-        Description
+        Description <span className="font-normal text-slate-400">(optional)</span>
       </label>
       <textarea
         id={`${id}-desc`}

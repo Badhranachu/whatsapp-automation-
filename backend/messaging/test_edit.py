@@ -25,7 +25,8 @@ class EditDeleteTests(APITestCase):
     def test_edit_template_validation(self):
         url = f'/api/templates/{self.tpl.id}/'
         self.assertEqual(self.client.patch(url, {'name': '   '}, format='json').status_code, 400)
-        self.assertEqual(self.client.patch(url, {'description': ''}, format='json').status_code, 400)
+        # description is optional, so clearing it is allowed
+        self.assertEqual(self.client.patch(url, {'description': ''}, format='json').status_code, 200)
 
     def test_delete_template_removes_its_flow(self):
         admin = User.objects.create_superuser('boss', 'boss@example.com', 'admin-pass-1')

@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react';
 import { getFlow, getTemplates, sendTemplateFlow } from '../services/api';
 import { normalizePhone } from '../services/phone';
-import { showError, showSendResults, toastError } from '../services/alerts';
+import { showError, showSendResults, toastError, toastSuccess } from '../services/alerts';
 import { Button, Card, inputClass, Spinner } from './ui';
 
 const MAX_RECIPIENTS = 50;
+
+// Dummy data for the JSON box. Numbers without a country code get the default one added.
+const EXAMPLE_NUMBERS = JSON.stringify(
+  { phone_numbers: ['9876543210', '9123456780', '+14155550123'] },
+  null,
+  2,
+);
 
 // WhatsApp-style preview of what the recipient will receive.
 function Preview({ root }) {
@@ -34,6 +41,8 @@ export default function TemplateSend() {
   const [numbers, setNumbers] = useState([]); // digits only, e.g. "919876543210"
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [jsonOpen, setJsonOpen] = useState(false);
+  const [jsonText, setJsonText] = useState('');
 
   useEffect(() => {
     getTemplates()
@@ -82,12 +91,43 @@ export default function TemplateSend() {
     setNumbers((prev) => [...prev, ...fresh]);
     if (bad.length > 0) {
       showError(
-        `These are not valid international numbers: ${bad.join(', ')}. Use the country code, e.g. +919876543210.`,
+        `These are not valid phone numbers: ${bad.join(', ')}. Check them and try again.`,
         'Some numbers were skipped',
       );
       setDraft(bad.join(', '));
     } else {
       setDraft('');
+    }
+  };
+
+  // Reads {"phone_numbers": [...]} or a plain [...] and adds the numbers like typed ones.
+  const importJson = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (err) {
+      showError(`That is not valid JSON: ${err.message}`, 'Invalid JSON');
+      return;
+    }
+    const list = Array.isArray(parsed) ? parsed : parsed?.phone_numbers;
+    if (!Array.isArray(list) || list.length === 0) {
+      showError('Use a list of numbers, e.g. {"phone_numbers": ["9876543210"]}.', 'Invalid JSON');
+      return;
+    }
+    if (list.some((n) => typeof n !== 'string' && typeof n !== 'number')) {
+      showError('Every entry must be a phone number.', 'Invalid JSON');
+      return;
+    }
+    addNumbers(list.join(','));
+    setJsonText('');
+  };
+
+  const copyExample = async () => {
+    try {
+      await navigator.clipboard.writeText(EXAMPLE_NUMBERS);
+      toastSuccess('Example copied');
+    } catch {
+      setJsonText(EXAMPLE_NUMBERS); // clipboard blocked: put it in the box instead
     }
   };
 
@@ -116,7 +156,7 @@ export default function TemplateSend() {
     const pending = draft.trim() ? normalizePhone(draft.trim()) : null;
     if (draft.trim() && !pending) {
       showError(
-        'The number in the box is not valid. Use the country code, e.g. +919876543210.',
+        'The number in the box is not valid.',
         'Invalid phone number',
       );
       return;
@@ -190,7 +230,7 @@ export default function TemplateSend() {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder="+91 9876543210, then press Enter"
+          placeholder="9876543210, then press Enter"
           disabled={sending}
           autoComplete="off"
           className={inputClass}
@@ -201,8 +241,39 @@ export default function TemplateSend() {
       </div>
       <p className="mt-1 text-xs text-slate-500">
         Press Enter or Add after each number. You can also paste several separated by commas or new
-        lines (up to {MAX_RECIPIENTS}).
+        lines (up to {MAX_RECIPIENTS}). The country code is added automatically when you leave it out.
       </p>
+
+      <button
+        type="button"
+        onClick={() => setJsonOpen((o) => !o)}
+        aria-expanded={jsonOpen}
+        className="mt-2 text-sm font-semibold text-emerald-700 hover:underline"
+      >
+        {jsonOpen ? '− Hide JSON import' : '+ Add numbers from JSON'}
+      </button>
+      {jsonOpen && (
+        <div className="mt-2">
+          <textarea
+            value={jsonText}
+            onChange={(e) => setJsonText(e.target.value)}
+            rows={6}
+            spellCheck={false}
+            disabled={sending}
+            aria-label="Phone numbers JSON"
+            placeholder={EXAMPLE_NUMBERS}
+            className={`${inputClass} font-mono text-xs`}
+          />
+          <div className="mt-2 flex gap-2">
+            <Button className="flex-1" disabled={sending || !jsonText.trim()} onClick={importJson}>
+              Add numbers
+            </Button>
+            <Button variant="secondary" disabled={sending} onClick={copyExample}>
+              Copy example
+            </Button>
+          </div>
+        </div>
+      )}
 
       {numbers.length > 0 && (
         <ul className="mt-3 flex flex-wrap gap-2">

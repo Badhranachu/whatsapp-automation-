@@ -134,6 +134,24 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# --- Email (password reset codes) -------------------------------------------------
+# With EMAIL_HOST set, mail goes out over SMTP. Without it (local development) the message,
+# including the code, is printed in the backend terminal instead.
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587') or 587)
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in ('1', 'true', 'yes')
+EMAIL_TIMEOUT = 15
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', '') or EMAIL_HOST_USER or 'noreply@localhost'
+EMAIL_BACKEND = (
+    'django.core.mail.backends.smtp.EmailBackend'
+    if EMAIL_HOST
+    else 'django.core.mail.backends.console.EmailBackend'
+)
+# Send the code from a background thread so the reply takes the same time for every email.
+OTP_EMAIL_ASYNC = True
+
 # --- Project settings ---
 CORS_ALLOWED_ORIGINS = [os.environ.get('FRONTEND_ORIGIN', 'http://localhost:5173')]
 CORS_ALLOW_ALL_ORIGINS = False
@@ -156,12 +174,16 @@ REST_FRAMEWORK = {
     # Every API endpoint requires a login token unless a view opts out.
     'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework.authentication.TokenAuthentication'],
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
-    'DEFAULT_THROTTLE_RATES': {'login': '10/min', 'admin_delete': '5/min', 'user_admin': '20/min'},
+    'DEFAULT_THROTTLE_RATES': {
+        'login': '10/min', 'admin_delete': '5/min', 'user_admin': '20/min', 'password_reset': '10/min',
+    },
 }
 
 # Read from environment only; never expose these via API responses or logs.
 WHATSAPP_ACCESS_TOKEN = os.environ.get('WHATSAPP_ACCESS_TOKEN', '')
 WHATSAPP_PHONE_NUMBER_ID = os.environ.get('WHATSAPP_PHONE_NUMBER_ID', '')
+# Added to numbers typed without a country code (10 digits). Empty disables it.
+DEFAULT_COUNTRY_CODE = os.environ.get('DEFAULT_COUNTRY_CODE', '91')
 WHATSAPP_GRAPH_API_VERSION = os.environ.get('WHATSAPP_GRAPH_API_VERSION', 'v26.0')
 # Must match the template's exact name and language code in WhatsApp Manager
 # (e.g. "en" and "en_US" are different languages to Meta).

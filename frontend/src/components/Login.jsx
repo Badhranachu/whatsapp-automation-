@@ -3,8 +3,8 @@ import { login } from '../services/api';
 import { showError } from '../services/alerts';
 import { Button, inputClass, Spinner } from './ui';
 
-export default function Login({ onLoggedIn }) {
-  const [email, setEmail] = useState('');
+export default function Login({ onLoggedIn, onForgot, initialEmail = '' }) {
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -65,7 +65,18 @@ export default function Login({ onLoggedIn }) {
           className={inputClass}
         />
 
-        <Button type="submit" className="mt-5 w-full" disabled={loading}>
+        <div className="mt-2 text-right">
+          <button
+            type="button"
+            onClick={onForgot}
+            disabled={loading}
+            className="text-sm font-semibold text-emerald-700 hover:underline"
+          >
+            Forgot password?
+          </button>
+        </div>
+
+        <Button type="submit" className="mt-3 w-full" disabled={loading}>
           {loading ? (
             <>
               <Spinner /> Signing in...

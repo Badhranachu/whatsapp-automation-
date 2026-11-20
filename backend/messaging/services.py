@@ -9,14 +9,6 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 15
 
-# Interactive reply buttons: id is echoed back by the webhook, title is shown
-# on the button (max 20 chars) and is what we send back to the user.
-OPTIONS_BODY = 'Are you funda ??'
-OPTIONS = [
-    {'id': 'opt_1', 'title': 'yes I am'},
-    {'id': 'opt_2', 'title': 'yes, how do you know'},  # WhatsApp limit: 20 chars
-]
-
 # Image sent back when either button is tapped.
 REPLY_IMAGE_PATH = settings.BASE_DIR / 'media' / 'image.png'
 
@@ -111,11 +103,6 @@ def send_buttons_message(to, body, options):
             },
         },
     })
-
-
-def send_options_message(to):
-    """The fixed demo question with two reply buttons."""
-    return send_buttons_message(to, OPTIONS_BODY, OPTIONS)
 
 
 def _upload(fh, filename, mime):

@@ -92,7 +92,7 @@ export default function SendForm({ title, description, buttonLabel, send, allowI
         <input
           id="phone"
           type="tel"
-          placeholder="+91 9876543210"
+          placeholder="9876543210"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           disabled={loading}

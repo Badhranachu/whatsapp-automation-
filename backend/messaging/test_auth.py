@@ -15,7 +15,6 @@ class AuthTests(APITestCase):
         for url in ['/api/messages/', '/api/stats/', '/api/auth/me/']:
             self.assertEqual(self.client.get(url).status_code, 401, url)
         self.assertEqual(self.client.post('/api/send-message/', {}, format='json').status_code, 401)
-        self.assertEqual(self.client.post('/api/send-options/', {}, format='json').status_code, 401)
 
     def test_login_ok_and_token_works(self):
         r = self.login('BOSS@example.com')  # case-insensitive email

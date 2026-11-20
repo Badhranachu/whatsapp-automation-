@@ -80,7 +80,7 @@ class MessageTemplate(models.Model):
     """A saved message template (name + description) managed from the website."""
 
     name = models.CharField(max_length=100)
-    description = models.TextField()
+    description = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -102,6 +102,9 @@ class Question(models.Model):
     parent_option = models.OneToOneField(
         'Option', null=True, blank=True, on_delete=models.CASCADE, related_name='next_question'
     )
+    # Closing messages only: when set, the next typed message from the person is saved as their reply.
+    wants_reply = models.BooleanField(default=False)
+    reply_thanks = models.CharField(max_length=1024, blank=True)  # optional thank-you sent after saving it
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -164,6 +167,7 @@ class FlowStep(models.Model):
     QUESTION_SENT = 'question_sent'
     OPTION_TAPPED = 'option_tapped'
     SEND_FAILED = 'send_failed'
+    REPLY_RECEIVED = 'reply_received'  # a typed message saved after a closing message
 
     run = models.ForeignKey(FlowRun, on_delete=models.CASCADE, related_name='steps')
     order = models.PositiveIntegerField()
@@ -203,6 +207,56 @@ class UserProfile(models.Model):
         'auth.User', on_delete=models.CASCADE, related_name='profile'
     )
     phone_number = models.CharField(max_length=20, blank=True)
+    # Profile picture, kept in the database (so it is backed up and persisted with everything else).
+    avatar = models.BinaryField(null=True, blank=True, editable=False)
+    avatar_type = models.CharField(max_length=20, blank=True)
+    avatar_updated = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f'Profile of {self.user_id}'
+
+
+class AuditLog(models.Model):
+    """Who changed what, and when. Written for every create / edit / delete / send / login.
+
+    The actor's email and role are copied here so the record stays readable even if the
+    account is later removed or its role changes.
+    """
+
+    actor = models.ForeignKey(
+        'auth.User', null=True, blank=True, on_delete=models.SET_NULL, related_name='+'
+    )
+    actor_email = models.CharField(max_length=150, blank=True)
+    actor_role = models.CharField(max_length=20, blank=True)  # super_admin | staff | anonymous
+    action = models.CharField(max_length=20, db_index=True)  # create, update, delete, import, send, login...
+    entity_type = models.CharField(max_length=30, db_index=True)  # template, question, option, user...
+    entity_id = models.CharField(max_length=40, blank=True)
+    entity_label = models.CharField(max_length=200, blank=True)
+    changes = models.JSONField(default=dict, blank=True)  # {"field": {"from": x, "to": y}} or details
+    ip_address = models.CharField(max_length=45, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f'{self.actor_email} {self.action} {self.entity_type} {self.entity_id}'
+
+
+class PasswordResetOtp(models.Model):
+    """A one-time code emailed to an admin who forgot their password.
+
+    Only a keyed hash of the code is stored. After the code is entered correctly the row also
+    holds a hash of a short-lived reset token, which the final "set new password" step needs.
+    """
+
+    user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name='+')
+    code_hash = models.CharField(max_length=64)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    token_hash = models.CharField(max_length=64, blank=True)  # set once the code was verified
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']

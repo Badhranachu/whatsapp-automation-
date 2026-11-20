@@ -2,14 +2,16 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import timedelta
 
 from django.conf import settings
 from django.http import HttpResponse, HttpResponseForbidden
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from .flows import FLOW_BUTTON_PREFIX, send_question
 from .models import FlowRun, FlowStep, MessageLog, Option, Question, add_step, log_message, update_status
-from .services import ConfigurationError, WhatsAppError, send_image_message
+from .services import ConfigurationError, WhatsAppError, send_image_message, send_text_message
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,46 @@ def _apply_statuses(payload):
                     if extra:
                         detail += f' - {extra}'
                 update_status(wa_id, status, detail)
+
+
+REPLY_WINDOW = timedelta(hours=24)  # WhatsApp only allows free-form messages inside this window
+
+
+def _save_reply(sender, text, wa_id, row):
+    """A typed message arrived: if it answers a closing message that asks for one, save it.
+
+    Only the latest run of this number counts, only once per run, and only while that run is
+    sitting on a closing message with "wants a typed reply" switched on.
+    """
+    text = text.strip()
+    if not text:
+        return
+    if wa_id and FlowStep.objects.filter(kind=FlowStep.REPLY_RECEIVED, wa_message_id=wa_id).exists():
+        return  # Meta re-delivered the same webhook
+    run = FlowRun.objects.filter(phone_number=sender).select_related('current_question', 'template').first()
+    if not run or run.status != FlowRun.COMPLETED:
+        return
+    question = run.current_question
+    if not question or not question.wants_reply or question.options.exists():
+        return
+    if run.updated_at < timezone.now() - REPLY_WINDOW:
+        return
+    if run.steps.filter(kind=FlowStep.REPLY_RECEIVED).exists():
+        return  # one reply per run
+    add_step(run, FlowStep.REPLY_RECEIVED, question=question, text=text[:4096], wa_message_id=wa_id)
+    if row is not None:
+        row.template = run.template
+        row.flow_run = run
+        row.save(update_fields=['template', 'flow_run'])
+    if question.reply_thanks:
+        try:
+            thanks_id = send_text_message(sender, question.reply_thanks)
+            log_message(
+                MessageLog.OUT, sender, 'flow', question.reply_thanks, thanks_id,
+                template=run.template, flow_run=run,
+            )
+        except (WhatsAppError, ConfigurationError) as exc:
+            logger.warning('Could not send the thank-you for a saved reply: %s', exc)
 
 
 def _continue_flow(sender, button_id, tap_wa_id):
@@ -134,6 +176,11 @@ def webhook(request):
         for sender, msg_type, content, wa_id, button_id in _extract_incoming(payload):
             row = log_message(MessageLog.IN, sender, msg_type, content, wa_id)
             if button_id is None:
+                if msg_type == 'text':
+                    try:
+                        _save_reply(sender, content, wa_id, row)
+                    except Exception:  # noqa: BLE001  never fail the webhook over a reply
+                        logger.exception('Could not save a typed reply')
                 continue
             try:
                 if button_id.startswith(FLOW_BUTTON_PREFIX):
