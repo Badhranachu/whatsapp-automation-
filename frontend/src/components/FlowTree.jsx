@@ -116,7 +116,63 @@ function Branch({ q, ...rest }) {
   );
 }
 
-export default function FlowTree({ root, currentLabel = 'You are here', ...rest }) {
+// A3 landscape minus 10 mm margins, in CSS pixels (96 dpi). The whole tree is scaled down to fit one page.
+const PDF_PAGE_W = 1511;
+const PDF_PAGE_H = 1047;
+
+// Prints the whole diagram (not just the visible part) so the browser can "Save as PDF".
+// It is vector output, so a big tree stays sharp when zoomed in the PDF.
+function printDiagram(sourceList, title) {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  const styles = [...document.querySelectorAll('link[rel="stylesheet"], style')]
+    .map((n) => (n.tagName === 'LINK' ? `<link rel="stylesheet" href="${n.href}">` : n.outerHTML))
+    .join('');
+  const clone = sourceList.cloneNode(true);
+  // The "you are here" badge only makes sense on screen.
+  clone.querySelectorAll('[data-current="true"] > span.absolute').forEach((n) => n.remove());
+  const safeTitle = String(title || 'Flow diagram').replace(/[<>&]/g, '');
+  frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>${safeTitle}</title>${styles}
+<style>
+  @page { size: A3 landscape; margin: 10mm; }
+  html, body { margin: 0; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  h1 { font: 700 18px/1.3 system-ui, sans-serif; margin: 0 0 2px; }
+  p.sub { font: 12px/1.3 system-ui, sans-serif; color: #64748b; margin: 0 0 10px; }
+  #fit { overflow: visible; }
+  #inner { transform-origin: 0 0; display: inline-block; }
+</style></head><body>
+<h1>${safeTitle}</h1><p class="sub">Flow diagram · ${new Date().toLocaleDateString()}</p>
+<div id="fit"><div id="inner" class="flow-tree"></div></div></body></html>`;
+  frame.onload = () => {
+    const doc = frame.contentDocument;
+    const inner = doc.getElementById('inner');
+    inner.appendChild(clone);
+    // measure at natural size, then scale to one page
+    const w = inner.scrollWidth;
+    const h = inner.scrollHeight;
+    const headerH = 48;
+    const scale = Math.min(1, PDF_PAGE_W / Math.max(w, 1), (PDF_PAGE_H - headerH) / Math.max(h, 1));
+    inner.style.transform = `scale(${scale})`;
+    const fit = doc.getElementById('fit');
+    fit.style.width = `${Math.ceil(w * scale)}px`;
+    fit.style.height = `${Math.ceil(h * scale)}px`;
+    const previousTitle = document.title;
+    document.title = safeTitle; // the PDF file name suggestion comes from the title
+    const done = () => {
+      document.title = previousTitle;
+      frame.remove();
+    };
+    frame.contentWindow.addEventListener('afterprint', done, { once: true });
+    setTimeout(() => {
+      frame.contentWindow.focus();
+      frame.contentWindow.print();
+    }, 150);
+  };
+  document.body.appendChild(frame);
+}
+
+export default function FlowTree({ root, currentLabel = 'You are here', title = 'Flow diagram', ...rest }) {
   const box = useRef(null);
   const [full, setFull] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -190,6 +246,16 @@ export default function FlowTree({ root, currentLabel = 'You are here', ...rest 
       </Button>
       <Button variant="secondary" className="!py-1.5" onClick={() => setZoom(1)}>
         100%
+      </Button>
+      <Button
+        variant="secondary"
+        className="!py-1.5"
+        onClick={() => {
+          const list = box.current?.querySelector('ul');
+          if (list) printDiagram(list, title);
+        }}
+      >
+        ⬇ PDF
       </Button>
     </div>
   );

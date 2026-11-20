@@ -80,7 +80,7 @@ class MessageTemplate(models.Model):
     """A saved message template (name + description) managed from the website."""
 
     name = models.CharField(max_length=100)
-    description = models.TextField(blank=True, default='')
+    description = models.TextField()  # optional in practice: the API accepts and stores an empty string
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

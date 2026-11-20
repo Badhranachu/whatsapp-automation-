@@ -293,6 +293,7 @@ function TemplateView({ templateId, onBack, onOpenRun }) {
               <div className="mt-4">
                 <FlowTree
                   root={flow.root}
+                  title={flow.template.name}
                   currentLabel=""
                   questionNote={(q) => {
                     const here = stats?.users_here?.[q.id] ?? 0;

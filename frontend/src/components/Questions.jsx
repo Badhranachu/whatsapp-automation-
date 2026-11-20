@@ -997,7 +997,7 @@ function FlowEditor({ templateId, onBack }) {
         )}
         {flow.root ? (
           <div className="mt-4">
-            <FlowTree root={flow.root} currentId={selectedId} onSelect={select} />
+            <FlowTree root={flow.root} currentId={selectedId} onSelect={select} title={flow.template.name} />
           </div>
         ) : (
           <p className="mt-3 text-sm text-slate-500">
