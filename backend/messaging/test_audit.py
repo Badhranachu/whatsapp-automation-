@@ -1,4 +1,5 @@
 from django.contrib.auth.models import User
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .models import AuditLog
@@ -28,6 +29,7 @@ class AuditTests(APITestCase):
         self.client.post(f'/api/templates/{tid}/import-flow/', {'text': 'Q', 'options': [{'title': 'x', 'next': {'text': 'Bye'}}]}, format='json')
         self.assertTrue(AuditLog.objects.filter(action='import', entity_type='flow').exists())
 
+    @override_settings(LOGIN_OTP_REQUIRED=False)
     def test_login_and_failed_login_logged_without_password(self):
         self.client.force_authenticate(user=None)
         self.client.post('/api/auth/login/', {'email': 'boss@example.com', 'password': 'nope'}, format='json')

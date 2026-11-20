@@ -43,9 +43,16 @@ BAD_CODE = 'That code is wrong or has expired. Request a new one if needed.'
 BAD_SESSION = 'This reset has expired. Please start again.'
 
 
-def _hash(value, user_id):
-    """Keyed hash (SECRET_KEY) so a leaked database row cannot be used to guess codes offline."""
-    msg = f'{user_id}:{value}'.encode()
+class OtpDeliveryError(Exception):
+    """The email with the code could not be sent."""
+
+
+def _hash(value, user_id, purpose='reset'):
+    """Keyed hash (SECRET_KEY) so a leaked database row cannot be used to guess codes offline.
+
+    A code is only valid for the purpose it was issued for: a password-reset code can never complete a sign-in.
+    """
+    msg = (f'{user_id}:{value}' if purpose == 'reset' else f'{user_id}:{purpose}:{value}').encode()
     return hmac.new(settings.SECRET_KEY.encode(), msg, hashlib.sha256).hexdigest()
 
 
@@ -56,41 +63,58 @@ def _find_admin(email):
     return User.objects.filter(email__iexact=email, is_superuser=True, is_active=True).first()
 
 
-def _email_otp(address, code):
+def _email_otp(address, code, purpose='reset'):
+    """Send the code. Returns True when the mail server accepted it."""
+    if purpose == 'login':
+        subject = 'Your WhatsApp Messenger sign-in code'
+        tail = 'If you did not just try to sign in, someone may know your password: please change it.'
+    else:
+        subject = 'Your WhatsApp Messenger password reset code'
+        tail = 'If you did not ask for it, ignore this email: your password has not changed.'
     try:
         send_mail(
-            'Your WhatsApp Messenger password reset code',
-            f'Your code is {code}.\n\nIt works for {OTP_MINUTES} minutes and can be used once. '
-            'If you did not ask for it, ignore this email: your password has not changed.',
+            subject,
+            f'Your code is {code}.\n\nIt works for {OTP_MINUTES} minutes and can be used once. {tail}',
             settings.DEFAULT_FROM_EMAIL,
             [address],
             fail_silently=False,
         )
+        return True
     except Exception:  # noqa: BLE001  never reveal mail problems to the caller
-        logger.exception('Could not send the password reset email')
+        logger.exception('Could not send the %s code email', purpose)
+        return False
 
 
-def _deliver(address, code):
+def _deliver(address, code, purpose='reset', sync=False):
+    if sync:
+        return _email_otp(address, code, purpose)
     if getattr(settings, 'OTP_EMAIL_ASYNC', False):
-        threading.Thread(target=_email_otp, args=(address, code), daemon=True).start()
+        threading.Thread(target=_email_otp, args=(address, code, purpose), daemon=True).start()
     else:
-        _email_otp(address, code)
+        _email_otp(address, code, purpose)
+    return True
 
 
-def issue_otp(request, user, label=''):
-    """Email a fresh code to `user` (at most one a minute). Returns True when one was sent."""
+def issue_otp(request, user, label='', purpose='reset', sync=False):
+    """Email a fresh code to `user` (at most one a minute). Returns True when one was sent.
+
+    With sync=True the email is sent before returning, and OtpDeliveryError is raised (and the code
+    discarded) when it cannot be sent, so the caller can tell the person instead of leaving them waiting.
+    """
     latest = PasswordResetOtp.objects.filter(user=user).first()
     if latest and latest.created_at > timezone.now() - timedelta(seconds=RESEND_SECONDS):
         return False
     code = f'{secrets.randbelow(10**6):06d}'
     with transaction.atomic():
         PasswordResetOtp.objects.filter(user=user, used=False).update(used=True)
-        PasswordResetOtp.objects.create(
+        otp = PasswordResetOtp.objects.create(
             user=user,
-            code_hash=_hash(code, user.id),
+            code_hash=_hash(code, user.id, purpose),
             expires_at=timezone.now() + timedelta(minutes=OTP_MINUTES),
         )
-    _deliver(user.email, code)
+    if not _deliver(user.email, code, purpose, sync):
+        otp.delete()  # nothing was sent, so do not block an immediate retry
+        raise OtpDeliveryError('The code could not be emailed.')
     return True
 
 

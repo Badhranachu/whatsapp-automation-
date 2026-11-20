@@ -28,6 +28,13 @@ preflight() {
     [ -n "$(env_get "$v")" ] || die "$v is missing or empty in $ENV_FILE"
   done
   ok "all required variables are set"
+  # Every sign-in needs a code emailed to the person, so without a working mail setup nobody could log in.
+  if [ "$(env_get LOGIN_OTP_REQUIRED | tr '[:upper:]' '[:lower:]')" != "false" ]; then
+    for v in EMAIL_HOST EMAIL_HOST_USER EMAIL_HOST_PASSWORD; do
+      [ -n "$(env_get "$v")" ] || die "$v is missing or empty in $ENV_FILE (needed to email the sign-in code; add it before deploying)"
+    done
+    ok "email settings for the sign-in code are set"
+  fi
   [ "$(env_get DEBUG)" = "False" ] || die "DEBUG must be False"
   ok "DEBUG=False"
   key=$(env_get SECRET_KEY)

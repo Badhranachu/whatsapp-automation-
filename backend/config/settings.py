@@ -151,6 +151,12 @@ EMAIL_BACKEND = (
 )
 # Send the code from a background thread so the reply takes the same time for every email.
 OTP_EMAIL_ASYNC = True
+# Every sign-in needs a 6-digit code emailed after the password is accepted. Needs the EMAIL_* settings
+# above (in development without EMAIL_HOST the code is printed in the backend terminal).
+LOGIN_OTP_REQUIRED = os.environ.get('LOGIN_OTP_REQUIRED', 'True').lower() in ('1', 'true', 'yes')
+# Optional second step instead of the emailed code: a shared 4-digit MPIN. Empty = off. It is typed as the Indian
+# time + the MPIN + any 3 digits, e.g. 330a7316123 at 3:30 am. See messaging/login_otp.py.
+MPIN = os.environ.get('MPIN', '').strip()
 
 # --- Project settings ---
 CORS_ALLOWED_ORIGINS = [os.environ.get('FRONTEND_ORIGIN', 'http://localhost:5173')]
@@ -176,6 +182,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
     'DEFAULT_THROTTLE_RATES': {
         'login': '10/min', 'admin_delete': '5/min', 'user_admin': '20/min', 'password_reset': '10/min',
+        'login_otp': '10/min',
     },
 }
 

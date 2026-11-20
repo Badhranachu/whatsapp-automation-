@@ -395,6 +395,8 @@ export function getToken() {
 export function setToken() {}
 export function setUnauthorizedHandler() {}
 export const login = async () => fail('Sign-in is not available in the demo.');
+export const verifyLoginOtp = async () => fail('Sign-in is not available in the demo.');
+export const resendLoginOtp = async () => fail('Sign-in is not available in the demo.');
 export const logout = async () => {};
 export const getMe = () => ok({ email: ME.email, is_superuser: true });
 

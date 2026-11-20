@@ -11,6 +11,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from . import audit
+from .login_otp import finish_login, start_login_challenge
 from .models import MessageLog, MessageTemplate, log_message
 from .serializers import MessageTemplateSerializer, SendMessageSerializer
 from .services import (
@@ -46,12 +47,9 @@ class LoginView(APIView):
                 {'success': False, 'error': 'Invalid email or password.'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
-        token, _ = Token.objects.get_or_create(user=user)
-        audit.record(request, 'login', 'session', user.id, user.email, user=user)
-        return Response({
-            'success': True, 'token': token.key, 'email': user.email,
-            'is_superuser': user.is_superuser,
-        })
+        if settings.LOGIN_OTP_REQUIRED:
+            return start_login_challenge(request, user)
+        return finish_login(request, user)
 
 
 class LogoutView(APIView):

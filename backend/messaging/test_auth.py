@@ -1,8 +1,10 @@
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 
+@override_settings(LOGIN_OTP_REQUIRED=False)
 class AuthTests(APITestCase):
     def setUp(self):
         cache.clear()

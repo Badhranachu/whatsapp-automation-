@@ -11,6 +11,7 @@ from .flows import (
     TemplateSendView,
 )
 from .health import health
+from .login_otp import LoginResendView, LoginVerifyView
 from .profile import (
     AvatarView,
     ProfilePasswordChangeView,
@@ -36,6 +37,8 @@ from .views import (
 urlpatterns = [
     path('health/', health, name='health'),
     path('auth/login/', LoginView.as_view(), name='login'),
+    path('auth/login/verify/', LoginVerifyView.as_view(), name='login-verify'),
+    path('auth/login/resend/', LoginResendView.as_view(), name='login-resend'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/me/', MeView.as_view(), name='me'),
     # DISABLED: these three endpoints let anyone who is not signed in reset an admin password by email code.

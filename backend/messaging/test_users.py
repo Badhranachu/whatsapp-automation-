@@ -1,6 +1,7 @@
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from rest_framework.authtoken.models import Token
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 GOOD = {
@@ -28,6 +29,7 @@ class UserManagementTests(APITestCase):
         self.assertEqual(self.client.post('/api/users/', GOOD, format='json').status_code, 403)
         self.assertFalse(User.objects.filter(email='new.admin@example.com').exists())
 
+    @override_settings(LOGIN_OTP_REQUIRED=False)
     def test_create_super_admin_who_can_log_in(self):
         res = self.client.post('/api/users/', GOOD, format='json')
         self.assertEqual(res.status_code, 201, res.data)

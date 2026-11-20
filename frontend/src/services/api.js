@@ -81,11 +81,22 @@ async function call(request) {
   }
 }
 
+// Step 1 of signing in. When the server wants an emailed code it answers { otp_required, challenge, ... }
+// and no token yet; otherwise it answers with the token straight away.
 export async function login(email, password) {
   const data = await call(() => client.post('/auth/login/', { email, password }));
+  if (data.token) setToken(data.token);
+  return data;
+}
+
+// Step 2: the 6-digit code from the email, or (when the server has an MPIN set) the MPIN entry.
+// Returns the same payload as a finished sign-in.
+export async function verifyLoginOtp(challenge, otp) {
+  const data = await call(() => client.post('/auth/login/verify/', { challenge, otp }));
   setToken(data.token);
   return data;
 }
+export const resendLoginOtp = (challenge) => call(() => client.post('/auth/login/resend/', { challenge }));
 
 // --- Forgot password (signed out): email -> code -> new password ---
 export const requestResetOtp = (email) => call(() => client.post('/auth/forgot-password/', { email }));

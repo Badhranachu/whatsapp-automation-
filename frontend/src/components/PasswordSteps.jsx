@@ -14,16 +14,19 @@ export function useCountdown(seconds, startKey) {
   return left;
 }
 
-// The 6-digit code box + Verify + Resend. Shared by "forgot password" and "change password".
-export function OtpStep({ sentTo, hint, onVerify, onResend, resendKey, resendSeconds = 60, extra }) {
+// The 6-digit code box + Verify + Resend. Shared by sign-in, "forgot password" and "change password".
+// allowLong: the same box also accepts a longer entry with letters (the sign-in MPIN entry); it is then masked.
+export function OtpStep({ sentTo, hint, onVerify, onResend, resendKey, resendSeconds = 60, extra, allowLong = false }) {
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const left = useCountdown(resendSeconds, resendKey);
 
+  const complete = allowLong ? code.trim().length >= 6 : /^\d{6}$/.test(code);
+
   const submit = async (e) => {
     e.preventDefault();
     if (busy) return;
-    if (!/^\d{6}$/.test(code)) {
+    if (!complete) {
       showError('Enter the 6-digit code from the email.', 'Check the code');
       return;
     }
@@ -44,17 +47,20 @@ export function OtpStep({ sentTo, hint, onVerify, onResend, resendKey, resendSec
       </label>
       <input
         id="otp"
-        inputMode="numeric"
-        autoComplete="one-time-code"
-        maxLength={6}
+        type={allowLong ? 'password' : 'text'}
+        inputMode={allowLong ? 'text' : 'numeric'}
+        autoComplete={allowLong ? 'off' : 'one-time-code'}
+        maxLength={allowLong ? 40 : 6}
         value={code}
-        onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+        onChange={(e) =>
+          setCode(allowLong ? e.target.value.replace(/[^0-9a-zA-Z ]/g, '') : e.target.value.replace(/\D/g, ''))
+        }
         placeholder="123456"
         disabled={busy}
         autoFocus
         className={`${inputClass} text-center text-lg tracking-[0.4em]`}
       />
-      <Button type="submit" className="mt-4 w-full" disabled={busy || code.length !== 6}>
+      <Button type="submit" className="mt-4 w-full" disabled={busy || !complete}>
         {busy ? (
           <>
             <Spinner /> Checking...
