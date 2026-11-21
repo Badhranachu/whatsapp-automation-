@@ -41,7 +41,8 @@ class LoginView(APIView):
             candidate = User.objects.filter(email__iexact=email).first()
             if candidate:
                 user = authenticate(request, username=candidate.get_username(), password=password)
-        if not user or not user.is_active:
+        # Only active super admins can sign in. Everyone else gets the same answer as a wrong password.
+        if not user or not user.is_active or not user.is_superuser:
             audit.record(request, 'login_failed', 'session', label=email[:150])
             return Response(
                 {'success': False, 'error': 'Invalid email or password.'},

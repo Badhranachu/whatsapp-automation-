@@ -14,7 +14,7 @@ CREDS = dict(
     WHATSAPP_PHONE_NUMBER_ID='123',
     WHATSAPP_GRAPH_API_VERSION='v26.0',
     WHATSAPP_VERIFY_TOKEN='verify-me',
-    WHATSAPP_APP_SECRET='',
+    WHATSAPP_APP_SECRET='', WEBHOOK_ALLOW_UNSIGNED=True,
 )
 
 
@@ -94,7 +94,7 @@ class WebhookTests(ReplyImageMixin, TestCase):
 @override_settings(**CREDS)
 class HistoryTests(ReplyImageMixin, APITestCase):
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
 
     @patch('messaging.services.requests.post')
     def test_sends_and_replies_are_saved_and_listed(self, mock_post):
@@ -140,7 +140,7 @@ class StatusTests(APITestCase):
                                 content_type='application/json')
 
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
         from messaging.models import MessageLog, log_message
         log_message(MessageLog.OUT, '919876543210', 'options', 'hi', 'wamid.s1')
 

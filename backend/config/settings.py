@@ -179,7 +179,8 @@ REST_FRAMEWORK = {
     'DEFAULT_PARSER_CLASSES': ['rest_framework.parsers.JSONParser'],
     # Every API endpoint requires a login token unless a view opts out.
     'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework.authentication.TokenAuthentication'],
-    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticated'],
+    # Every API view is for active super admins only unless a view says otherwise on purpose (sign-in steps).
+    'DEFAULT_PERMISSION_CLASSES': ['messaging.permissions.IsSuperAdmin'],
     'DEFAULT_THROTTLE_RATES': {
         'login': '10/min', 'admin_delete': '5/min', 'user_admin': '20/min', 'password_reset': '10/min',
         'login_otp': '10/min',
@@ -198,6 +199,9 @@ WHATSAPP_GRAPH_API_VERSION = os.environ.get('WHATSAPP_GRAPH_API_VERSION', 'v26.0
 WHATSAPP_VERIFY_TOKEN = os.environ.get('WHATSAPP_VERIFY_TOKEN', '')
 # Optional but recommended: Meta App Secret, used to validate webhook signatures.
 WHATSAPP_APP_SECRET = os.environ.get('WHATSAPP_APP_SECRET', '')
+# Webhook POSTs must carry Meta's signature. Only for local development WITHOUT an app secret can this be set to
+# True to accept unsigned requests (never in production: the check below refuses to start).
+WEBHOOK_ALLOW_UNSIGNED = os.environ.get('WEBHOOK_ALLOW_UNSIGNED', 'False').lower() in ('1', 'true', 'yes')
 WHATSAPP_TEMPLATE_NAME =os.environ.get('WHATSAPP_TEMPLATE_NAME', 'test_notification')
 WHATSAPP_TEMPLATE_LANG = os.environ.get('WHATSAPP_TEMPLATE_LANG', 'en')
 
@@ -216,6 +220,8 @@ if not DEBUG:
         _problems.append('SECRET_KEY')
     if _unset(WHATSAPP_APP_SECRET):
         _problems.append('WHATSAPP_APP_SECRET (needed to verify that webhooks really come from Meta)')
+    if WEBHOOK_ALLOW_UNSIGNED:
+        _problems.append('WEBHOOK_ALLOW_UNSIGNED must not be True in production')
     if any(h.startswith('REPLACE_WITH') for h in ALLOWED_HOSTS):
         _problems.append('ALLOWED_HOSTS (still contains the domain placeholder)')
     if any('REPLACE_WITH' in o for o in CSRF_TRUSTED_ORIGINS + CORS_ALLOWED_ORIGINS):

@@ -5,22 +5,16 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
 from rest_framework import serializers, status
-from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from . import audit
 from .models import UserProfile
+from .permissions import IsSuperAdmin as IsSuperUser  # the one shared super-admin rule
 from .serializers import SendMessageSerializer
 
 MAX_EMAIL_LENGTH = 150  # the built-in User.username limit; the email is the username
-
-
-class IsSuperUser(BasePermission):
-    def has_permission(self, request, view):
-        user = request.user
-        return bool(user and user.is_authenticated and user.is_superuser and user.is_active)
 
 
 def describe(user):

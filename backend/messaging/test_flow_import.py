@@ -14,7 +14,7 @@ FLOW = {
 
 class FlowImportTests(APITestCase):
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
         self.tpl = MessageTemplate.objects.create(name='S')
         self.url = f'/api/templates/{self.tpl.id}/import-flow/'
 

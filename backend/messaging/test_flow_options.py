@@ -6,7 +6,7 @@ from .models import MessageTemplate, Option, Question
 
 class QuestionWithOptionsTests(APITestCase):
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
         self.tpl = MessageTemplate.objects.create(name='Survey', description='d')
         self.url = f'/api/templates/{self.tpl.id}/questions/'
 

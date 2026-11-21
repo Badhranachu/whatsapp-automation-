@@ -6,7 +6,7 @@ from .models import MessageTemplate, Option, Question
 
 class EditDeleteTests(APITestCase):
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
         self.tpl = MessageTemplate.objects.create(name='Survey', description='old')
         self.q = Question.objects.create(template=self.tpl, text='Ready?')
         self.yes = Option.objects.create(question=self.q, title='yes')

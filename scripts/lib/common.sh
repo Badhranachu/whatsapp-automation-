@@ -22,7 +22,7 @@ gate_migrate_ok() { msg_has_tag "$1" '[migrate-ok]'; }
 # query strings, Meta access tokens, bearer headers, key=value secrets).
 mask_secrets() {
   sed -E \
-    -e 's/((hub\.)?verify_token|access_token|app_secret|secret_key|password)=[^&[:space:]"]+/\1=***/Ig' \
+    -e 's/((hub\.)?verify_token|access_token|app_secret|secret_key|password|mpin)=[^&[:space:]"]+/\1=***/Ig' \
     -e 's/EAA[A-Za-z0-9]{20,}/EAA***/g' \
     -e 's/(Authorization:[[:space:]]*Bearer[[:space:]]+)[^[:space:]]+/\1***/Ig'
 }

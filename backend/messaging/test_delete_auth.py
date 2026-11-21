@@ -52,10 +52,16 @@ class TemplateDeleteNeedsAdminPasswordTests(APITestCase):
         self.assertTrue(self.still_there())
 
     def test_reading_and_editing_do_not_need_the_password(self):
-        self.client.force_authenticate(user=self.staff)
+        self.client.force_authenticate(user=self.admin)
         self.assertEqual(self.client.get(self.url).status_code, 200)
         r = self.client.patch(self.url, {'name': 'Renamed'}, format='json')
         self.assertEqual(r.status_code, 200)
+
+    def test_a_non_superuser_cannot_even_read_or_edit(self):
+        self.client.force_authenticate(user=self.staff)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self.client.patch(self.url, {'name': 'Renamed'}, format='json').status_code, 403)
+        self.assertEqual(MessageTemplate.objects.get(pk=self.tpl.pk).name, 'Survey')
 
     def test_wrong_password_is_not_a_401(self):
         # a 401 would make the web page log the user out

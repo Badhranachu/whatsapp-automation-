@@ -143,7 +143,7 @@ def _user_from_challenge(raw):
         data = signing.loads(str(raw or ''), salt=CHALLENGE_SALT, max_age=CHALLENGE_MINUTES * 60)
     except signing.BadSignature:
         return None
-    return User.objects.filter(pk=data.get('uid'), is_active=True).first()
+    return User.objects.filter(pk=data.get('uid'), is_active=True, is_superuser=True).first()
 
 
 class _LoginStepView(APIView):

@@ -12,7 +12,7 @@ CREDS = dict(
     WHATSAPP_PHONE_NUMBER_ID='123',
     WHATSAPP_GRAPH_API_VERSION='v26.0',
     WHATSAPP_VERIFY_TOKEN='verify-me',
-    WHATSAPP_APP_SECRET='',
+    WHATSAPP_APP_SECRET='', WEBHOOK_ALLOW_UNSIGNED=True,
 )
 
 
@@ -49,7 +49,7 @@ def tap(sender, option, wa_id):
 @override_settings(**CREDS)
 class RunRecordingTests(APITestCase):
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
         self.tpl, self.root, self.yes, self.no, self.q2, self.a, self.note = build()
 
     def send(self, numbers):
@@ -135,7 +135,7 @@ class RunRecordingTests(APITestCase):
 @override_settings(**CREDS)
 class RunReadApiTests(APITestCase):
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
         self.tpl, self.root, self.yes, self.no, self.q2, self.a, self.note = build()
         with patch('messaging.services.requests.post') as mock_post:
             mock_post.side_effect = [ok(1), ok(2), ok(3), ok(4)]

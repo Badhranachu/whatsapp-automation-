@@ -17,10 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def _signature_ok(request):
-    """Validate X-Hub-Signature-256 when an app secret is configured."""
+    """Every POST must carry a valid X-Hub-Signature-256 made with the Meta app secret.
+
+    With no app secret configured nothing can be verified, so the request is refused, unless local development
+    explicitly opted in with WEBHOOK_ALLOW_UNSIGNED (which production refuses to start with).
+    """
     secret = settings.WHATSAPP_APP_SECRET
     if not secret:
-        return True  # local dev without a secret; set WHATSAPP_APP_SECRET in production
+        return bool(getattr(settings, 'WEBHOOK_ALLOW_UNSIGNED', False))
     header = request.headers.get('X-Hub-Signature-256', '')
     expected = 'sha256=' + hmac.new(secret.encode(), request.body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(header, expected)

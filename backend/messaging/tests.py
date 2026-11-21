@@ -24,7 +24,7 @@ def fake_response(status_code, body):
 @override_settings(**CREDS)
 class SendMessageTests(APITestCase):
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
 
     def post(self, data):
         return self.client.post(URL, data, format='json')

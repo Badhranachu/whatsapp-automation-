@@ -11,7 +11,7 @@ from .models import FlowRun, FlowStep, MessageLog, MessageTemplate, Option, Ques
 
 CREDS = dict(
     WHATSAPP_ACCESS_TOKEN='t', WHATSAPP_PHONE_NUMBER_ID='1', WHATSAPP_GRAPH_API_VERSION='v26.0',
-    WHATSAPP_VERIFY_TOKEN='v', WHATSAPP_APP_SECRET='',
+    WHATSAPP_VERIFY_TOKEN='v', WHATSAPP_APP_SECRET='', WEBHOOK_ALLOW_UNSIGNED=True,
 )
 PHONE = '919876543210'
 
@@ -123,7 +123,7 @@ class WebhookReplyTests(TestCase):
     @patch('messaging.webhook.send_text_message', return_value='wamid.out1')
     def test_shows_in_insights_run_detail_and_csv(self, send):
         self.post('Add dark mode')
-        user = User.objects.create_user('t', 't@example.com', 'pw')
+        user = User.objects.create_superuser('t', 't@example.com', 'pw')
         from rest_framework.test import APIClient
         c = APIClient()
         c.force_authenticate(user=user)

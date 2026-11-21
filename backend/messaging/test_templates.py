@@ -4,7 +4,7 @@ from rest_framework.test import APITestCase
 
 class TemplateTests(APITestCase):
     def authed(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
 
     def test_requires_login(self):
         self.assertEqual(self.client.get('/api/templates/').status_code, 401)

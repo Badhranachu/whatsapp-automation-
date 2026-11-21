@@ -6,7 +6,7 @@ from .models import FlowRun, FlowStep, MessageTemplate, Option, Question, add_st
 
 class AnalyticsTests(APITestCase):
     def setUp(self):
-        self.client.force_authenticate(user=User.objects.create_user('t', 't@example.com', 'pw'))
+        self.client.force_authenticate(user=User.objects.create_superuser('t', 't@example.com', 'pw'))
         self.tpl = MessageTemplate.objects.create(name='S')
         self.q = Question.objects.create(template=self.tpl, text='Use it?')
         self.yes = Option.objects.create(question=self.q, title='Yes')
